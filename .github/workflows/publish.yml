@@ -47,7 +47,7 @@ jobs:
         run: python archive_icon_ch1.py --probe
 
       - name: Construire le site (run 12Z, repli 9Z)
-        run: python build_site.py --out site --wait-minutes 0
+        run: python build_site.py --out site --wait-minutes 30
 
       - uses: actions/configure-pages@v5
 
