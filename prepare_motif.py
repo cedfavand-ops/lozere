@@ -63,6 +63,42 @@ def acquisition_time(path: Path):
     return dt.datetime.strptime(m.group(1), "%Y%m%dT%H%M%S").replace(tzinfo=dt.timezone.utc)
 
 
+def remove_seams(a, thr=2.0, min_votes=250, half_width_px=1.5):
+    """
+    Détecte les liserés rectilignes (artefacts de scan ECOSTRESS, perpendiculaires ou parallèles à la fauchée)
+    et met leurs pixels à NaN. On repère les pixels très différents de la médiane locale 7x7, puis on cherche
+    des droites longues parmi eux (transformée de Hough). Les structures non rectilignes (lacs, vallées) sont
+    laissées intactes. Renvoie (tableau corrigé, nombre de pixels masqués).
+    """
+    try:
+        from skimage.transform import hough_line, hough_line_peaks
+    except ImportError:
+        print("  (scikit-image absent : détection des liserés ignorée)")
+        return a, 0
+    from scipy.ndimage import median_filter
+    valid = np.isfinite(a)
+    if valid.sum() < 1000:
+        return a, 0
+    filled = np.where(valid, a, np.nanmedian(a))
+    dev = filled - median_filter(filled, size=7)
+    sel = valid & (np.abs(dev) > thr)
+    if sel.sum() < min_votes:
+        return a, 0
+    angles = np.deg2rad(np.linspace(-90, 90, 720, endpoint=False))
+    hspace, theta, dist = hough_line(sel, theta=angles)
+    acc, ang, dst = hough_line_peaks(hspace, theta, dist, num_peaks=3, min_distance=30,
+                                     min_angle=20, threshold=min_votes)
+    if len(acc) == 0:
+        return a, 0
+    yy, xx = np.mgrid[0:a.shape[0], 0:a.shape[1]]
+    out = a.copy()
+    for votes, an, di in zip(acc, ang, dst):
+        near = np.abs(xx * np.cos(an) + yy * np.sin(an) - di) <= half_width_px
+        print(f"  liseré détecté : angle {np.degrees(an):.1f}°, {int(votes)} votes, {int(near.sum())} pixels masqués")
+        out[near] = np.nan
+    return out, int(valid.sum() - np.isfinite(out).sum())
+
+
 def smooth_masked(arr, valid, sigma_px):
     """Lissage gaussien qui ignore les mailles invalides (convolution normalisée)."""
     from scipy.ndimage import gaussian_filter
@@ -106,6 +142,7 @@ def main():
         with rasterio.open(f) as src:
             a = src.read(1).astype("float32")
             a[~np.isfinite(a) | (a < 150) | (a > 350)] = np.nan
+            a, n_seam = remove_seams(a)
             dst = np.full((h, w), np.nan, dtype="float32")
             reproject(a, dst, src_transform=src.transform, src_crs=src.crs,
                       dst_transform=transform, dst_crs="EPSG:2154",
