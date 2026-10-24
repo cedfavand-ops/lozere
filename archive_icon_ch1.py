@@ -98,9 +98,14 @@ def find_latest_complete_run(variable: str = "T_2M") -> dt.datetime:
 # ----------------------------------------------------------------------------
 # Grille
 # ----------------------------------------------------------------------------
+LAT_NAMES = ("CLAT", "tlat")   # tlat/tlon = noms WMO standard de la latitude/longitude
+LON_NAMES = ("CLON", "tlon")
+
+
 def read_full_grid(grib_path: Path):
-    """Lit lat/lon des mailles dans le fichier statique. Robuste à l'absence des définitions ICON d'ecCodes."""
-    named, others = {}, []
+    """Lit lat/lon des mailles dans le fichier statique de MeteoSwiss (qui contient aussi d'autres champs)."""
+    wanted = set(LAT_NAMES + LON_NAMES)
+    fields, seen = {}, []
     with open(grib_path, "rb") as f:
         while True:
             gid = eccodes.codes_grib_new_from_file(f)
@@ -111,32 +116,22 @@ def read_full_grid(grib_path: Path):
                     name = eccodes.codes_get(gid, "shortName")
                 except Exception:
                     name = "unknown"
-                vals = eccodes.codes_get_values(gid)
+                seen.append(name)
+                if name in wanted and name not in fields:
+                    fields[name] = eccodes.codes_get_values(gid)
             finally:
                 eccodes.codes_release(gid)
-            if name in ("CLAT", "CLON"):
-                named[name] = vals
-            else:
-                others.append((name, vals))
-    if "CLAT" in named and "CLON" in named:
-        lat, lon = named["CLAT"], named["CLON"]
-    else:
-        # shortName non reconnus : on identifie les deux champs par leurs valeurs
-        # (sur ce domaine la latitude est toujours supérieure à la longitude).
-        cands = [(n, v) for n, v in list(named.items()) + others if v.size > 1000]
-        print(f"shortName CLAT/CLON non reconnus (messages : {[n for n, _ in cands]}) ; "
-              "identification par les valeurs.")
-        if len(cands) < 2:
-            raise RuntimeError(f"Fichier de grille inattendu : {len(cands)} champ(s) exploitable(s).")
-        cands = cands[:2]
-        cands.sort(key=lambda nv: float(np.nanmean(nv[1])))
-        lon, lat = cands[0][1], cands[1][1]
-    # Les constantes ICON peuvent être en radians
+    lat = next((fields[n] for n in LAT_NAMES if n in fields), None)
+    lon = next((fields[n] for n in LON_NAMES if n in fields), None)
+    if lat is None or lon is None:
+        raise RuntimeError(f"Latitude/longitude introuvables dans le fichier de grille (messages vus : {seen}).")
+    # Selon la version, radians ou degrés ; longitude parfois en 0..360
     if np.nanmax(np.abs(lat)) <= np.pi / 2 + 1e-6:
         lat, lon = np.degrees(lat), np.degrees(lon)
+    lon = np.where(lon > 180, lon - 360, lon)
     if not (30 < float(np.nanmean(lat)) < 60 and -10 < float(np.nanmean(lon)) < 30):
         raise RuntimeError(f"Coordonnées incohérentes (lat moyenne {np.nanmean(lat):.1f}, "
-                           f"lon moyenne {np.nanmean(lon):.1f}).")
+                           f"lon moyenne {np.nanmean(lon):.1f}) ; messages vus : {seen}")
     return lat, lon
 
 
@@ -222,13 +217,28 @@ def archive_run(ref: dt.datetime, variables):
         print(f"{out.name} écrit ({len(leads)} échéances, {idx.size} mailles).")
 
 
+def probe():
+    """Indique, pour les derniers runs, si T_2M est disponible à +0 h et +33 h (diagnostic de la requête API)."""
+    now = dt.datetime.now(dt.timezone.utc).replace(minute=0, second=0, microsecond=0)
+    ref = now - dt.timedelta(hours=now.hour % 3)
+    print(f"Maintenant : {now:%Y-%m-%d %H:%M} UTC")
+    for _ in range(9):
+        res = [f"+{h:02d}h : " + ("oui" if find_item(ref, "T_2M", h) else "non") for h in (0, 33)]
+        print(f"Run {ref:%d/%m %H} UTC -> " + " | ".join(res))
+        ref -= dt.timedelta(hours=3)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--check-domain", action="store_true")
+    ap.add_argument("--probe", action="store_true", help="disponibilité des derniers runs")
     ap.add_argument("--ref", help="Run UTC, ex. 2026-10-24T12")
     ap.add_argument("--vars", nargs="+", default=["T_2M"])
     args = ap.parse_args()
 
+    if args.probe:
+        probe()
+        return
     if args.check_domain:
         check_domain()
         return
