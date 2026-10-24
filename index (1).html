@@ -1,0 +1,161 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lozère – Tn / Tx du lendemain</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<style>
+  :root { --bg: #ffffffee; --fg: #1d2330; --muted: #5b6475; --accent: #1f5fbf; --warn: #b3261e; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #1b202bee; --fg: #e8ebf2; --muted: #a2abbd; --accent: #7fb0ff; --warn: #ff8a80; }
+  }
+  html, body { height: 100%; margin: 0; font: 14px/1.4 system-ui, sans-serif; }
+  #map { position: absolute; inset: 0; background: #fff; }
+  #panel { position: absolute; z-index: 1000; top: 10px; left: 10px; width: 260px; max-width: calc(100% - 40px);
+           background: var(--bg); color: var(--fg); border-radius: 10px; padding: 12px 14px;
+           box-shadow: 0 2px 10px #0004; backdrop-filter: blur(4px); }
+  #panel h1 { font-size: 15px; margin: 0 0 8px; }
+  .tabs { display: flex; gap: 6px; margin-bottom: 8px; }
+  .tabs button { flex: 1; padding: 6px 0; border: 1px solid var(--accent); background: transparent;
+                 color: var(--accent); border-radius: 6px; cursor: pointer; font: inherit; }
+  .tabs button.on { background: var(--accent); color: #fff; }
+  #legend { width: 100%; height: 12px; border-radius: 3px; display: block; }
+  #scale { display: flex; justify-content: space-between; font-size: 12px; color: var(--muted); margin-top: 2px; }
+  #info { font-size: 12px; color: var(--muted); margin-top: 8px; }
+  #stale { display: none; color: var(--warn); font-weight: 600; margin-top: 8px; font-size: 12px; }
+  label { display: block; font-size: 12px; color: var(--muted); margin-top: 8px; }
+  input[type=range] { width: 100%; }
+  .leaflet-container { font-family: inherit; }
+</style>
+</head>
+<body>
+<div id="map"></div>
+<div id="panel">
+  <h1>Lozère – prévision du lendemain</h1>
+  <div class="tabs">
+    <button id="b-tn" class="on">Tn (nuit)</button>
+    <button id="b-tx">Tx (jour)</button>
+  </div>
+  <canvas id="legend"></canvas>
+  <div id="scale"><span id="vmin"></span><span id="vmax"></span></div>
+  <label>Opacité <input id="op" type="range" min="0.2" max="1" step="0.05" value="0.85"></label>
+  <div id="info">Chargement…</div>
+  <div id="stale"></div>
+</div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+const MAX_AGE_H = 30;         // au-delà, la page signale que la prévision n'a pas été mise à jour
+const NODATA = -32768;
+let meta, overlay, current = 'tn';
+const cache = {};
+
+const fmt = iso => new Date(iso).toLocaleString('fr-FR', {
+  timeZone: 'Europe/Paris', weekday: 'short', day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
+
+function outerRings(g) {
+  const geoms = g.type === 'FeatureCollection' ? g.features.map(f => f.geometry)
+              : g.type === 'Feature' ? [g.geometry] : [g];
+  const rings = [];
+  for (const gm of geoms) {
+    const polys = gm.type === 'Polygon' ? [gm.coordinates] : gm.coordinates;
+    for (const p of polys) rings.push(p[0].map(c => [c[1], c[0]]));
+  }
+  return rings;
+}
+
+async function loadBin(name) {
+  if (!cache[name]) {
+    const buf = await (await fetch(name + '.bin', {cache: 'no-store'})).arrayBuffer();
+    cache[name] = new Int16Array(buf);
+  }
+  return cache[name];
+}
+
+function drawLegend() {
+  const c = document.getElementById('legend');
+  c.width = 256; c.height = 1;
+  const ctx = c.getContext('2d');
+  const g = ctx.createLinearGradient(0, 0, 256, 0);
+  meta.palette.forEach((col, i) => g.addColorStop(i / (meta.palette.length - 1), col));
+  ctx.fillStyle = g; ctx.fillRect(0, 0, 256, 1);
+  document.getElementById('vmin').textContent = meta[current].vmin + ' °C';
+  document.getElementById('vmax').textContent = meta[current].vmax + ' °C';
+}
+
+function setVar(name, map) {
+  current = name;
+  document.getElementById('b-tn').classList.toggle('on', name === 'tn');
+  document.getElementById('b-tx').classList.toggle('on', name === 'tx');
+  const bounds = L.latLngBounds(meta.bounds_latlng);
+  if (overlay) map.removeLayer(overlay);
+  overlay = L.imageOverlay(name + '.png?v=' + encodeURIComponent(meta.generated_at), bounds,
+    { opacity: +document.getElementById('op').value, interactive: false }).addTo(map);
+  drawLegend();
+}
+
+async function init() {
+  meta = await (await fetch('meta.json', {cache: 'no-store'})).json();
+  const geo = await (await fetch('lozere.geojson')).json();
+  const bounds = L.latLngBounds(meta.bounds_latlng);
+
+  const map = L.map('map', { zoomSnap: 0.25, maxBoundsViscosity: 0.9 });
+  map.fitBounds(bounds);
+  map.setMaxBounds(bounds.pad(0.2));
+  map.setMinZoom(map.getZoom() - 0.5);
+
+  const ign = L.tileLayer('https://data.geopf.fr/wmts?REQUEST=GetTile&SERVICE=WMTS&VERSION=1.0.0&STYLE=normal'
+    + '&TILEMATRIXSET=PM&FORMAT=image/png&LAYER=GEOGRAPHICALGRIDSYSTEMS.PLANIGNV2'
+    + '&TILEMATRIX={z}&TILEROW={y}&TILECOL={x}',
+    { maxZoom: 18, attribution: '© IGN' });
+  const osm = L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+    { maxZoom: 19, attribution: '© OpenStreetMap' });
+  ign.addTo(map);
+  L.control.layers({ 'Plan IGN': ign, 'OpenStreetMap': osm }, null, { position: 'topright' }).addTo(map);
+
+  // Voile blanc partout sauf à l'intérieur du département
+  map.createPane('mask').style.zIndex = 450;
+  map.createPane('border').style.zIndex = 460;
+  const world = [[-85, -180], [-85, 180], [85, 180], [85, -180]];
+  L.polygon([world, ...outerRings(geo)],
+    { pane: 'mask', stroke: false, fillColor: '#ffffff', fillOpacity: 0.92, interactive: false }).addTo(map);
+  L.geoJSON(geo, { pane: 'border', interactive: false,
+    style: { color: '#333', weight: 1.5, fill: false } }).addTo(map);
+
+  setVar('tn', map);
+  document.getElementById('b-tn').onclick = () => setVar('tn', map);
+  document.getElementById('b-tx').onclick = () => setVar('tx', map);
+  document.getElementById('op').oninput = e => overlay && overlay.setOpacity(+e.target.value);
+
+  map.on('click', async e => {
+    const p = L.CRS.EPSG3857.project(e.latlng);
+    const [x0, y0, x1, y1] = meta.bounds_3857;
+    const col = Math.floor((p.x - x0) / ((x1 - x0) / meta.width));
+    const row = Math.floor((y1 - p.y) / ((y1 - y0) / meta.height));
+    if (col < 0 || row < 0 || col >= meta.width || row >= meta.height) return;
+    const v = (await loadBin(current))[row * meta.width + col];
+    if (v === NODATA) return;
+    L.popup({ closeButton: false }).setLatLng(e.latlng)
+      .setContent(`<b>${(v / 10).toFixed(1)} °C</b> (${current === 'tn' ? 'Tn' : 'Tx'})`).openOn(map);
+  });
+
+  document.getElementById('info').innerHTML =
+    `Run ICON-CH1 de ${fmt(meta.run_utc)} (12 UTC).<br>` +
+    `Tn : ${fmt(meta.tn_window_utc[0])} → ${fmt(meta.tn_window_utc[1])}<br>` +
+    `Tx : ${fmt(meta.tx_window_utc[0])} → ${fmt(meta.tx_window_utc[1])}` +
+    (meta.tx_truncated_at_utc ? ` (fenêtre tronquée à ${fmt(meta.tx_truncated_at_utc)})` : '') +
+    `<br><br>Prévision expérimentale, maille ${meta.grid_m} m.<br>` +
+    `Données : MeteoSuisse, ICON-CH1-EPS (OGD).`;
+
+  const ageH = (Date.now() - new Date(meta.generated_at)) / 36e5;
+  if (ageH > MAX_AGE_H) {
+    const s = document.getElementById('stale');
+    s.style.display = 'block';
+    s.textContent = `Attention : cette prévision date de ${Math.round(ageH)} h et n'a pas été mise à jour.`;
+  }
+}
+init().catch(err => { document.getElementById('info').textContent = 'Erreur de chargement : ' + err.message; });
+</script>
+</body>
+</html>

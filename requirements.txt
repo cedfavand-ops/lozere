@@ -1,0 +1,9 @@
+requests
+numpy
+scipy
+pyproj
+shapely
+rasterio
+pillow
+matplotlib
+eccodes
