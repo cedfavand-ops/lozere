@@ -99,31 +99,44 @@ def find_latest_complete_run(variable: str = "T_2M") -> dt.datetime:
 # Grille
 # ----------------------------------------------------------------------------
 def read_full_grid(grib_path: Path):
-    lat = lon = None
-    seen = []
+    """Lit lat/lon des mailles dans le fichier statique. Robuste à l'absence des définitions ICON d'ecCodes."""
+    named, others = {}, []
     with open(grib_path, "rb") as f:
         while True:
             gid = eccodes.codes_grib_new_from_file(f)
             if gid is None:
                 break
             try:
-                name = eccodes.codes_get(gid, "shortName")
-                seen.append(name)
-                if name == "CLAT":
-                    lat = eccodes.codes_get_values(gid)
-                elif name == "CLON":
-                    lon = eccodes.codes_get_values(gid)
+                try:
+                    name = eccodes.codes_get(gid, "shortName")
+                except Exception:
+                    name = "unknown"
+                vals = eccodes.codes_get_values(gid)
             finally:
                 eccodes.codes_release(gid)
-    if lat is None or lon is None:
-        raise RuntimeError(
-            f"CLAT/CLON introuvables (messages vus : {seen}). "
-            "Installez les définitions COSMO d'ecCodes (voir README MeteoSwiss, section 2.8.1) "
-            "ou adaptez les shortName."
-        )
+            if name in ("CLAT", "CLON"):
+                named[name] = vals
+            else:
+                others.append((name, vals))
+    if "CLAT" in named and "CLON" in named:
+        lat, lon = named["CLAT"], named["CLON"]
+    else:
+        # shortName non reconnus : on identifie les deux champs par leurs valeurs
+        # (sur ce domaine la latitude est toujours supérieure à la longitude).
+        cands = [(n, v) for n, v in list(named.items()) + others if v.size > 1000]
+        print(f"shortName CLAT/CLON non reconnus (messages : {[n for n, _ in cands]}) ; "
+              "identification par les valeurs.")
+        if len(cands) < 2:
+            raise RuntimeError(f"Fichier de grille inattendu : {len(cands)} champ(s) exploitable(s).")
+        cands = cands[:2]
+        cands.sort(key=lambda nv: float(np.nanmean(nv[1])))
+        lon, lat = cands[0][1], cands[1][1]
     # Les constantes ICON peuvent être en radians
     if np.nanmax(np.abs(lat)) <= np.pi / 2 + 1e-6:
         lat, lon = np.degrees(lat), np.degrees(lon)
+    if not (30 < float(np.nanmean(lat)) < 60 and -10 < float(np.nanmean(lon)) < 30):
+        raise RuntimeError(f"Coordonnées incohérentes (lat moyenne {np.nanmean(lat):.1f}, "
+                           f"lon moyenne {np.nanmean(lon):.1f}).")
     return lat, lon
 
 
