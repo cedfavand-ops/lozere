@@ -2,9 +2,9 @@ name: Publier la carte Tn/Tx Lozère
 
 on:
   schedule:
-    # Horaire UTC. 15h20 UTC = 17h20 (été) / 16h20 (hiver) en heure locale.
-    # À ajuster selon l'heure à laquelle le run 12Z est complet chez MeteoSwiss.
-    - cron: "20 15 * * *"
+    # Horaire UTC. 16h00 UTC = 18h00 en heure d'été, 17h00 en heure d'hiver.
+    # Le run 12Z est complet vers 14h30 UTC ; GitHub peut retarder le déclenchement de quelques minutes.
+    - cron: "0 16 * * *"
   workflow_dispatch:
 
 permissions:
@@ -20,6 +20,8 @@ jobs:
   build:
     runs-on: ubuntu-latest
     timeout-minutes: 75
+    env:
+      PYTHONUNBUFFERED: "1"
     steps:
       - uses: actions/checkout@v4
 
@@ -34,8 +36,13 @@ jobs:
       - name: Dépendances Python
         run: pip install -r requirements.txt
 
-      - name: Construire le site (run 12Z)
-        run: python build_site.py --out site --wait-minutes 45
+      - name: Diagnostic grille ICON (lancement manuel uniquement)
+        if: github.event_name == 'workflow_dispatch'
+        continue-on-error: true
+        run: python archive_icon_ch1.py --check-domain
+
+      - name: Construire le site (run 12Z, repli 9Z)
+        run: python build_site.py --out site --wait-minutes 30
 
       - uses: actions/configure-pages@v5
 
