@@ -1,0 +1,37 @@
+name: Préparer les données (MNT + motif d'inversion)
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write   # pour enregistrer les résultats dans le dépôt
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      PYTHONUNBUFFERED: "1"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Dépendances
+        run: pip install numpy scipy rasterio pyproj shapely requests matplotlib pillow
+
+      - name: MNT 150 m (Lambert-93)
+        run: python prepare_dem.py
+
+      - name: Motif d'inversion (ECOSTRESS)
+        run: python prepare_motif.py
+
+      - name: Enregistrer les résultats dans le dépôt
+        run: |
+          git config user.name "github-actions"
+          git config user.email "github-actions@users.noreply.github.com"
+          git add data/dem_150m_l93.tif data/motif_150m_l93.tif data/motif_apercu.png
+          git commit -m "MNT 150 m et motif d'inversion" || echo "Rien à enregistrer"
+          git push
