@@ -63,12 +63,14 @@ def acquisition_time(path: Path):
     return dt.datetime.strptime(m.group(1), "%Y%m%dT%H%M%S").replace(tzinfo=dt.timezone.utc)
 
 
-def remove_seams(a, thr=2.0, min_votes=250, half_width_px=1.5):
+def remove_seams(a, thr=2.0, min_votes=250, half_width_px=1.5, outer_px=5.0, outer_thr=1.2):
     """
     Détecte les liserés rectilignes (artefacts de scan ECOSTRESS, perpendiculaires ou parallèles à la fauchée)
     et met leurs pixels à NaN. On repère les pixels très différents de la médiane locale 7x7, puis on cherche
-    des droites longues parmi eux (transformée de Hough). Les structures non rectilignes (lacs, vallées) sont
-    laissées intactes. Renvoie (tableau corrigé, nombre de pixels masqués).
+    des droites longues parmi eux (transformée de Hough). Le liseré réel n'est pas parfaitement droit : on masque
+    entièrement une bande étroite autour de la droite (half_width_px) et, jusqu'à outer_px, seulement les pixels
+    encore aberrants (> outer_thr). Les structures non rectilignes (lacs, vallées) sont laissées intactes.
+    Renvoie (tableau corrigé, nombre de pixels masqués).
     """
     try:
         from skimage.transform import hough_line, hough_line_peaks
@@ -93,9 +95,12 @@ def remove_seams(a, thr=2.0, min_votes=250, half_width_px=1.5):
     yy, xx = np.mgrid[0:a.shape[0], 0:a.shape[1]]
     out = a.copy()
     for votes, an, di in zip(acc, ang, dst):
-        near = np.abs(xx * np.cos(an) + yy * np.sin(an) - di) <= half_width_px
-        print(f"  liseré détecté : angle {np.degrees(an):.1f}°, {int(votes)} votes, {int(near.sum())} pixels masqués")
-        out[near] = np.nan
+        dist_l = np.abs(xx * np.cos(an) + yy * np.sin(an) - di)
+        core = dist_l <= half_width_px
+        halo = (dist_l <= outer_px) & ~core & valid & (np.abs(dev) > outer_thr)
+        print(f"  liseré détecté : angle {np.degrees(an):.1f}°, {int(votes)} votes, "
+              f"{int(core.sum())} pixels masqués au coeur + {int(halo.sum())} aberrants alentour")
+        out[core | halo] = np.nan
     return out, int(valid.sum() - np.isfinite(out).sum())
 
 
