@@ -16,6 +16,7 @@ la page affiche l'interpolation brute d'ICON sur la grille 150 m.
 import argparse
 import datetime as dt
 import json
+import os
 import shutil
 import sys
 import time
@@ -273,7 +274,16 @@ def main():
     info["fallback"] = run_utc.hour != 12
     build_site(d["lat"], d["lon"], tn_pts, tx_pts, run_utc, info,
                args.geojson, args.out, args.cmap)
+    for name in ("index.html", "meta.json", "tn.png", "tx.png", "tn.bin", "tx.bin", "lozere.geojson"):
+        if not (Path(args.out) / name).exists():
+            sys.exit(f"Construction incomplète : {name} manquant dans {args.out}/")
 
 
 if __name__ == "__main__":
     main()
+    # Sortie immédiate, une fois le site vérifié : sur GitHub Actions, l'arrêt normal de l'interpréteur
+    # provoquait « double free or corruption » (conflit entre les bibliothèques natives d'ecCodes et de
+    # GDAL/PROJ chargées dans le même processus). Tout est déjà écrit sur le disque à ce stade.
+    sys.stdout.flush()
+    sys.stderr.flush()
+    os._exit(0)
