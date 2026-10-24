@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """
 Construit la page statique (dossier site/) : Tn et Tx du lendemain sur la Lozère,
-à partir du run ICON-CH1 de 12 UTC. Rien n'est coloré hors du département.
+à partir du run ICON-CH1 de 12 UTC (repli sur le run de 9 UTC si le 12Z n'est pas sorti
+après --wait-minutes). Rien n'est coloré hors du département.
 
   python build_site.py                       # télécharge le run 12Z du jour et construit site/
   python build_site.py --npz archive_icon_ch1/20261024T12Z_T_2M.npz   # utilise un run déjà archivé
@@ -213,16 +214,35 @@ def default_ref_12z():
     return ref if now >= ref else ref - dt.timedelta(days=1)
 
 
-def fetch_run(ref, wait_minutes):
+def fetch_run(refs, wait_minutes):
+    """
+    refs : runs par ordre de préférence (ex. [12Z, 9Z]).
+    On attend le premier jusqu'à wait_minutes ; sinon on prend le premier repli disponible.
+    Le run doit être complet (échéance +33 h présente).
+    """
     import archive_icon_ch1 as icon
+    first, others = refs[0], refs[1:]
     deadline = time.time() + wait_minutes * 60
-    while not icon.find_item(ref, "T_2M", icon.MAX_HORIZON_H):
+    chosen = None
+    while True:
+        if icon.find_item(first, "T_2M", icon.MAX_HORIZON_H):
+            chosen = first
+            break
         if time.time() > deadline:
-            raise RuntimeError(f"Run {ref:%Y-%m-%d %H} UTC toujours indisponible après {wait_minutes} min.")
-        print("Run pas encore complet, nouvelle tentative dans 3 min...")
-        time.sleep(180)
-    icon.archive_run(ref, ["T_2M"])
-    return icon.OUT_DIR / f"{ref:%Y%m%dT%H}Z_T_2M.npz"
+            break
+        print(f"Run {first:%H} UTC pas encore complet, nouvelle tentative dans 2 min...")
+        time.sleep(120)
+    if chosen is None:
+        for ref in others:
+            if icon.find_item(ref, "T_2M", icon.MAX_HORIZON_H):
+                chosen = ref
+                print(f"REPLI : run {first:%H} UTC indisponible, utilisation du run {ref:%H} UTC.")
+                break
+    if chosen is None:
+        raise RuntimeError("Aucun des runs demandés n'est complet : "
+                           + ", ".join(f"{r:%d/%m %H} UTC" for r in refs))
+    icon.archive_run(chosen, ["T_2M"])
+    return icon.OUT_DIR / f"{chosen:%Y%m%dT%H}Z_T_2M.npz"
 
 
 def main():
@@ -231,7 +251,9 @@ def main():
     ap.add_argument("--out", default="site")
     ap.add_argument("--npz", help="Run déjà archivé (format de archive_icon_ch1.py)")
     ap.add_argument("--ref", help="Run UTC, ex. 2026-10-24T12 (défaut : dernier 12Z)")
-    ap.add_argument("--wait-minutes", type=int, default=45)
+    ap.add_argument("--wait-minutes", type=int, default=30,
+                    help="attente maximale du run 12Z avant repli sur le 9Z")
+    ap.add_argument("--no-fallback", action="store_true", help="n'utiliser que le run demandé (pas de repli 9Z)")
     ap.add_argument("--cmap", default="turbo")
     args = ap.parse_args()
 
@@ -240,13 +262,15 @@ def main():
     else:
         ref = (dt.datetime.fromisoformat(args.ref).replace(tzinfo=dt.timezone.utc)
                if args.ref else default_ref_12z())
-        npz = fetch_run(ref, args.wait_minutes)
+        refs = [ref] if args.no_fallback else [ref, ref - dt.timedelta(hours=3)]   # 12Z puis 9Z
+        npz = fetch_run(refs, args.wait_minutes)
 
     d = np.load(npz)
     run_utc = dt.datetime.fromisoformat(str(d["ref_utc"]).replace("Z", "+00:00"))
-    if run_utc.hour != 12:
-        sys.exit(f"Ce pipeline n'utilise que le run 12Z (reçu : {run_utc:%H} UTC).")
+    if run_utc.hour not in (9, 12):
+        sys.exit(f"Ce pipeline n'utilise que les runs 12Z (ou 9Z en repli) ; reçu : {run_utc:%H} UTC.")
     tn_pts, tx_pts, info = tn_tx(d["values"], d["lead_hours"], run_utc)
+    info["fallback"] = run_utc.hour != 12
     build_site(d["lat"], d["lon"], tn_pts, tx_pts, run_utc, info,
                args.geojson, args.out, args.cmap)
 
