@@ -166,6 +166,7 @@ def apply_model(tn, tx, X, Y, ctx):
         print(f"DÉMONSTRATION : indice d'inversion forcé à {float(forced):.2f} (ce n'est PAS la prévision réelle).")
 
     tn2, tx2 = model.apply_correction(tn, tx, dem, z_icon, alpha, motif)
+    ctx["layers"] = {"alpha": alpha, "motif": motif, "dz": np.clip(dem - z_icon, -model.MAX_DZ, model.MAX_DZ)}
     d_tn, d_tx = (tn2 - tn)[inside], (tx2 - tx)[inside]
     print(f"Nuit retenue : {int(night.sum())} échéances ; alpha moyen {alpha[inside].mean():.2f} "
           f"(min {alpha[inside].min():.2f}, max {alpha[inside].max():.2f})")
@@ -261,6 +262,63 @@ def smooth_field(a, sigma=SMOOTH_SIGMA):
     return gaussian_filter(a, sigma, mode="nearest").astype("float32")
 
 
+def load_stations():
+    """Stations à suivre : data/stations_infoclimat.json (liste_stations.py) et data/stations_datacake.json."""
+    stations = []
+    for fname, source in (("stations_infoclimat.json", "infoclimat"), ("stations_datacake.json", "datacake")):
+        p = HERE / "data" / fname
+        if p.exists():
+            for st in json.loads(p.read_text(encoding="utf-8")):
+                st = dict(st)
+                st["source"] = source
+                stations.append(st)
+    return stations
+
+
+def sample_grid(arr, transform, xs, ys):
+    """Valeur d'une grille 150 m (Lambert-93) aux points (xs, ys), par interpolation bilinéaire."""
+    from scipy.ndimage import map_coordinates
+    cols = (np.asarray(xs, dtype=float) - transform.c) / GRID_M - 0.5
+    rows = (transform.f - np.asarray(ys, dtype=float)) / GRID_M - 0.5
+    return map_coordinates(arr, [rows, cols], order=1, mode="nearest")
+
+
+def record_history(tn, tx, tn_pre, tx_pre, layers, transform, to_l93, run_utc, win_info, model_info):
+    """
+    Enregistre dans history/forecast_AAAA-MM-JJ.json les valeurs prévues (corrigées et ICON seul) aux stations,
+    avec les fenêtres de prévision : verify.py les comparera le lendemain aux observations.
+    """
+    stations = load_stations()
+    if not stations:
+        print("Aucune station configurée (data/stations_*.json) : historique non enregistré.")
+        return
+    lon = [float(st["lon"]) for st in stations]
+    lat = [float(st["lat"]) for st in stations]
+    xs, ys = to_l93.transform(lon, lat)
+    cols = {"tn": sample_grid(tn, transform, xs, ys), "tx": sample_grid(tx, transform, xs, ys),
+            "tn_icon": sample_grid(tn_pre, transform, xs, ys), "tx_icon": sample_grid(tx_pre, transform, xs, ys)}
+    if layers:
+        for k in ("alpha", "motif", "dz"):
+            cols[k] = sample_grid(layers[k], transform, xs, ys)
+    rows = []
+    for i, st in enumerate(stations):
+        row = {"id": st["id"], "name": st.get("name"), "source": st["source"],
+               "lat": st["lat"], "lon": st["lon"], "z_station": st.get("elevation")}
+        row.update({k: round(float(v[i]), 2) for k, v in cols.items()})
+        rows.append(row)
+    day = run_utc.astimezone(TZ).date().isoformat()
+    rec = {"day": day, "run_utc": run_utc.isoformat(),
+           "tn_window_utc": win_info["tn_window_utc"], "tx_window_utc": win_info["tx_window_utc"],
+           "tx_truncated_at_utc": win_info.get("tx_truncated_at_utc"), "fallback": win_info.get("fallback"),
+           "model": model_info.get("model"), "alpha_mean": model_info.get("alpha_mean"),
+           "wind_night_mean": model_info.get("wind_night_mean"), "cloud_night_mean": model_info.get("cloud_night_mean"),
+           "stations": rows}
+    path = HERE / "history" / f"forecast_{day}.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(rec, ensure_ascii=False, indent=1), encoding="utf-8")
+    print(f"Historique : prévision aux {len(rows)} stations enregistrée dans {path.name}")
+
+
 def build_site(lat, lon, tn_pts, tx_pts, run_utc, win_info, geojson, out_dir, cmap="turbo", ctx=None):
     from pyproj import Transformer
     from rasterio.features import geometry_mask
@@ -278,12 +336,19 @@ def build_site(lat, lon, tn_pts, tx_pts, run_utc, win_info, geojson, out_dir, cm
     pts = np.column_stack([px, py])
     tn = griddata(pts, tn_pts, (X, Y), method="linear").astype("float32")
     tx = griddata(pts, tx_pts, (X, Y), method="linear").astype("float32")
+    tn_pre, tx_pre = tn.copy(), tx.copy()                # ICON seul, avant correction (pour l'historique)
 
     inside = geometry_mask([geom_l93], out_shape=(h, w), transform=transform, invert=True)
     ctx = dict(ctx or {}, run_utc=run_utc, pts=pts, lat=lat, lon=lon, inside=inside)
     tn, tx, model_info = apply_model(tn, tx, X, Y, ctx)
     tn, tx = smooth_field(tn), smooth_field(tx)          # lissage léger : bords nets mais arrondis
     tn_full, tx_full = tn.copy(), tx.copy()              # champs sur toute l'emprise (pour les contours)
+    if ctx.get("record", True) and ctx.get("force_alpha") is None:    # jamais pour la page de démonstration
+        try:
+            record_history(tn_full, tx_full, tn_pre, tx_pre, ctx.get("layers"), transform, to_l93,
+                           run_utc, win_info, model_info)
+        except Exception as e:
+            print(f"Historique non enregistré ({type(e).__name__}: {e})")
     tn[~inside] = np.nan
     tx[~inside] = np.nan
 
@@ -368,6 +433,7 @@ def main():
                     help="attente maximale du run 12Z avant repli sur le 9Z")
     ap.add_argument("--no-fallback", action="store_true", help="n'utiliser que le run demandé (pas de repli 9Z)")
     ap.add_argument("--cmap", default="turbo")
+    ap.add_argument("--no-history", action="store_true", help="ne pas enregistrer la prévision aux stations")
     ap.add_argument("--force-alpha", type=float, default=None,
                     help="DÉMO : impose l'indice d'inversion (0 à 1) au lieu de la règle météo")
     args = ap.parse_args()
@@ -402,7 +468,8 @@ def main():
         hsurf = icon.load_hsurf()
     except Exception as e:   # réseau absent en test local, etc.
         print(f"Altitude du relief ICON indisponible ({type(e).__name__}) : repli sur le MNT lissé.")
-    ctx = {"lead_hours": d["lead_hours"], "extra": extra, "hsurf": hsurf, "force_alpha": args.force_alpha}
+    ctx = {"lead_hours": d["lead_hours"], "extra": extra, "hsurf": hsurf, "force_alpha": args.force_alpha,
+           "record": not args.no_history}
     build_site(d["lat"], d["lon"], tn_pts, tx_pts, run_utc, info,
                args.geojson, args.out, args.cmap, ctx=ctx)
     for name in ("index.html", "meta.json", "tn.png", "tx.png", "tn.bin", "tx.bin", "lozere.geojson"):
