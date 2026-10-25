@@ -49,6 +49,10 @@ jobs:
       - name: Construire le site (run 12Z, repli 9Z)
         run: python build_site.py --out site --wait-minutes 30
 
+      - name: Page de démonstration (indice d'inversion forcé à 1)
+        continue-on-error: true
+        run: python build_site.py --out site/demo --force-alpha 1 --npz "$(ls archive_icon_ch1/*_T_2M.npz | tail -1)"
+
       - uses: actions/configure-pages@v5
 
       - uses: actions/upload-pages-artifact@v3
