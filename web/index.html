@@ -44,20 +44,21 @@
   <canvas id="legend"></canvas>
   <div id="scale"><span id="vmin"></span><span id="vmax"></span></div>
   <label>Opacité des couleurs <input id="op" type="range" min="0.2" max="1" step="0.05" value="0.85"></label>
-  <label class="chk"><input type="checkbox" id="c-bands" checked> Aplats de couleur</label>
+  <label class="chk"><input type="checkbox" id="c-fill" checked> Couleurs</label>
   <label class="chk"><input type="checkbox" id="c-lines" checked> Isolignes (fines : 1 °C, épaisses : 5 °C)</label>
   <div id="busy" style="font-size:12px;color:var(--muted);margin-top:6px"></div>
   <div id="info">Chargement…</div>
   <div id="stale"></div>
 </div>
 
+<div id="tip" style="position:fixed;display:none;z-index:1200;pointer-events:none;background:var(--bg);color:var(--fg);padding:3px 8px;border-radius:6px;font:600 13px system-ui,sans-serif;box-shadow:0 1px 6px #0006"></div>
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/d3@7.9.0/dist/d3.min.js"></script>
 <script>
 const MAX_AGE_H = 30;         // au-delà, la page signale que la prévision n'a pas été mise à jour
 const NODATA = -32768;
 let meta, overlay, current = 'tn';
-const vec = { bands: null, lines: null, labels: null };
+const vec = { lines: null, labels: null };
 const cache = {};          // grilles brutes (Int16)
 const fieldCache = {};     // grilles en °C (Float32, NaN = vide)
 const vcache = {};         // couches vectorielles déjà calculées, par variable
@@ -99,16 +100,6 @@ function drawLegend() {
   ctx.fillStyle = g; ctx.fillRect(0, 0, 256, 1);
   document.getElementById('vmin').textContent = meta[current].vmin + ' °C';
   document.getElementById('vmax').textContent = meta[current].vmax + ' °C';
-}
-
-function colorAt(t) {
-  // t entre 0 et 1 : interpolation linéaire entre les couleurs de la palette (comme la légende)
-  const p = meta.palette, n = p.length - 1;
-  const x = Math.min(Math.max(t, 0), 1) * n, i = Math.min(Math.floor(x), n - 1), f = x - i;
-  const a = p[i], b = p[i + 1];
-  const c = k => Math.round(parseInt(a.slice(1 + 2 * k, 3 + 2 * k), 16) * (1 - f)
-                          + parseInt(b.slice(1 + 2 * k, 3 + 2 * k), 16) * f);
-  return `rgb(${c(0)},${c(1)},${c(2)})`;
 }
 
 async function loadField(name) {
@@ -203,9 +194,25 @@ function inGeo(lat, lng) {
   return false;
 }
 
+function valueAt(latlng) {
+  // température (°C) au point donné, par interpolation bilinéaire de la grille ; null hors Lozère
+  const arr = cache[current];
+  if (!arr || !inGeo(latlng.lat, latlng.lng)) return null;
+  const p = L.CRS.EPSG3857.project(latlng);
+  const [x0, y0, x1, y1] = meta.bounds_3857, W = meta.width;
+  const fx = (p.x - x0) / ((x1 - x0) / W) - 0.5;
+  const fy = (y1 - p.y) / ((y1 - y0) / meta.height) - 0.5;
+  const c0 = Math.floor(fx), r0 = Math.floor(fy);
+  if (c0 < 0 || r0 < 0 || c0 + 1 >= W || r0 + 1 >= meta.height) return null;
+  const tx = fx - c0, ty = fy - r0;
+  const a = arr[r0 * W + c0], b = arr[r0 * W + c0 + 1], c = arr[(r0 + 1) * W + c0], d = arr[(r0 + 1) * W + c0 + 1];
+  if (a === NODATA || b === NODATA || c === NODATA || d === NODATA) return null;
+  return ((a * (1 - tx) + b * tx) * (1 - ty) + (c * (1 - tx) + d * tx) * ty) / 10;
+}
+
 async function buildVectors(name) {
-  // Aplats (une couche par degré, superposées de bas en haut) et isolignes, calculés dans le navigateur
-  // à partir de la grille de températures : tracés vectoriels, donc nets à tous les zooms.
+  // Isolignes calculées dans le navigateur à partir de la grille de températures : tracés vectoriels,
+  // donc nets à tous les zooms. (Les couleurs, elles, viennent de l'image douce du serveur.)
   const m = meta[name], w = meta.width, h = meta.height;
   const f = blur121(await loadField(name), w, h, CONTOUR_BLUR_PASSES);
   const [x0, y0, x1, y1] = meta.bounds_3857;
@@ -215,27 +222,21 @@ async function buildVectors(name) {
   for (let t = lo; t <= hi; t++) levels.push(t);
   const conts = d3.contours().size([w, h]).thresholds(levels)(f);
 
-  const bandLayers = [], lineLayers = [], labels = [];
+  const lineLayers = [], labels = [];
   conts.forEach((c, k) => {
     const t = levels[k];
-    const polys = [], lineRings = [], cand = [];
+    const lineRings = [], cand = [];
     for (const poly of c.coordinates) {
       if (ringArea(poly[0]) < MIN_RING_AREA) continue;
-      const rings = [];
       poly.forEach((ring, ri) => {
         if (ri > 0 && ringArea(ring) < MIN_RING_AREA) return;
         const ll = ringToLatLng(ring, g);
         if (ll.length < 3) return;
-        rings.push(ll);
         lineRings.push(ll.concat([ll[0]]));
         cand.push({ ll, len: ringLength(ring) });
       });
-      if (rings.length) polys.push(rings);
     }
-    if (!polys.length) return;
-    const color = colorAt((t + 0.5 - m.vmin) / (m.vmax - m.vmin));
-    bandLayers.push(L.polygon(polys, { pane: 'bands', stroke: false, fillColor: color, fillOpacity: 1,
-                                       fillRule: 'evenodd', interactive: false }));
+    if (!lineRings.length) return;
     const major = t % 5 === 0;
     lineLayers.push(L.polyline(lineRings, Object.assign({ pane: 'lines', interactive: false, lineJoin: 'round' },
       major ? { color: '#111', weight: 2.2, opacity: 0.92, lineCap: 'round' }
@@ -257,30 +258,25 @@ async function buildVectors(name) {
       }
     }
   });
-  return { bands: L.layerGroup(bandLayers), lines: L.layerGroup(lineLayers), labels: L.layerGroup(labels) };
+  return { lines: L.layerGroup(lineLayers), labels: L.layerGroup(labels) };
 }
 
 function clearLayers(map) {
-  for (const k of ['bands', 'lines', 'labels']) {
+  for (const k of ['lines', 'labels']) {
     if (vec[k]) { map.removeLayer(vec[k]); vec[k] = null; }
   }
   if (overlay) { map.removeLayer(overlay); overlay = null; }
 }
 
 function applyToggles(map) {
-  const set = (k, on) => {
-    const l = vec[k];
-    if (!l) return;
-    if (on && !map.hasLayer(l)) map.addLayer(l);
-    if (!on && map.hasLayer(l)) map.removeLayer(l);
-  };
-  const bandsOn = document.getElementById('c-bands').checked;
   const linesOn = document.getElementById('c-lines').checked;
-  set('bands', bandsOn);
-  set('lines', linesOn);
-  set('labels', linesOn);
-  if (overlay) overlay.setOpacity(bandsOn ? +document.getElementById('op').value : 0);
-  map.getPane('bands').style.opacity = document.getElementById('op').value;
+  for (const k of ['lines', 'labels']) {
+    const l = vec[k];
+    if (!l) continue;
+    if (linesOn && !map.hasLayer(l)) map.addLayer(l);
+    if (!linesOn && map.hasLayer(l)) map.removeLayer(l);
+  }
+  if (overlay) overlay.setOpacity(document.getElementById('c-fill').checked ? +document.getElementById('op').value : 0);
 }
 
 async function setVar(name, map) {
@@ -289,23 +285,24 @@ async function setVar(name, map) {
   document.getElementById('b-tx').classList.toggle('on', name === 'tx');
   clearLayers(map);
   drawLegend();
-  const busy = document.getElementById('busy');
-  let ok = false;
-  if (typeof d3 !== 'undefined' && d3.contours) {
-    busy.textContent = 'Calcul des isolignes…';
-    try {
-      await new Promise(r => setTimeout(r, 30));          // laisse le navigateur afficher le message
-      if (!vcache[name]) vcache[name] = await buildVectors(name);
-      if (current !== name) return;                         // changement d'onglet pendant le calcul
-      Object.assign(vec, vcache[name]);
-      ok = true;
-    } catch (e) { console.error(e); }
-    busy.textContent = '';
-  }
-  if (ok) { applyToggles(map); return; }
-  // Repli : image raster (bibliothèque d'isolignes indisponible ou erreur)
+  loadBin(name);                                   // charge la grille pour la lecture au survol
   overlay = L.imageOverlay(name + '.png?v=' + encodeURIComponent(meta.generated_at),
     L.latLngBounds(meta.bounds_latlng), { opacity: +document.getElementById('op').value, interactive: false }).addTo(map);
+  applyToggles(map);
+  if (typeof d3 === 'undefined' || !d3.contours) return;     // sans la bibliothèque : couleurs seules
+  const busy = document.getElementById('busy');
+  busy.textContent = 'Calcul des isolignes…';
+  try {
+    await new Promise(r => setTimeout(r, 30));              // laisse le navigateur afficher le message
+    if (!vcache[name]) vcache[name] = await buildVectors(name);
+    if (current !== name) return;                           // changement d'onglet pendant le calcul
+    Object.assign(vec, vcache[name]);
+    applyToggles(map);
+  } catch (e) {
+    console.error(e);
+  } finally {
+    busy.textContent = '';
+  }
 }
 
 async function init() {
@@ -329,7 +326,6 @@ async function init() {
   L.control.layers({ 'Plan IGN': ign, 'OpenStreetMap': osm }, null, { position: 'topright' }).addTo(map);
 
   // Voile blanc partout sauf à l'intérieur du département
-  map.createPane('bands').style.zIndex = 410;
   map.createPane('lines').style.zIndex = 430;
   map.createPane('labels').style.zIndex = 440;
   map.createPane('mask').style.zIndex = 450;
@@ -344,20 +340,33 @@ async function init() {
   document.getElementById('b-tn').onclick = () => setVar('tn', map);
   document.getElementById('b-tx').onclick = () => setVar('tx', map);
   document.getElementById('op').oninput = () => applyToggles(map);
-  document.getElementById('c-bands').onchange = () => applyToggles(map);
+  document.getElementById('c-fill').onchange = () => applyToggles(map);
   document.getElementById('c-lines').onchange = () => applyToggles(map);
 
-  map.on('click', async e => {
-    const p = L.CRS.EPSG3857.project(e.latlng);
-    const [x0, y0, x1, y1] = meta.bounds_3857;
-    const col = Math.floor((p.x - x0) / ((x1 - x0) / meta.width));
-    const row = Math.floor((y1 - p.y) / ((y1 - y0) / meta.height));
-    if (col < 0 || row < 0 || col >= meta.width || row >= meta.height) return;
-    if (!inGeo(e.latlng.lat, e.latlng.lng)) return;      // hors Lozère : pas de valeur
-    const v = (await loadBin(current))[row * meta.width + col];
-    if (v === NODATA) return;
+  // Température au survol de la souris (et, sur écran tactile, au toucher)
+  const tip = document.getElementById('tip');
+  let raf = null, hovering = false;
+  map.on('mousemove', e => {
+    hovering = true;
+    const cx = e.originalEvent.clientX, cy = e.originalEvent.clientY, ll = e.latlng;
+    if (raf) return;
+    raf = requestAnimationFrame(() => {
+      raf = null;
+      const v = hovering ? valueAt(ll) : null;
+      if (v === null) { tip.style.display = 'none'; return; }
+      tip.textContent = `${current === 'tn' ? 'Tn' : 'Tx'} ${v.toFixed(1)} °C`;
+      tip.style.left = (cx + 14) + 'px';
+      tip.style.top = (cy + 14) + 'px';
+      tip.style.display = 'block';
+    });
+  });
+  map.on('mouseout', () => { hovering = false; tip.style.display = 'none'; });
+  map.on('click', e => {
+    if (window.matchMedia('(hover: hover)').matches) return;     // souris : le survol suffit
+    const v = valueAt(e.latlng);
+    if (v === null) return;
     L.popup({ closeButton: false }).setLatLng(e.latlng)
-      .setContent(`<b>${(v / 10).toFixed(1)} °C</b> (${current === 'tn' ? 'Tn' : 'Tx'})`).openOn(map);
+      .setContent(`<b>${v.toFixed(1)} °C</b> (${current === 'tn' ? 'Tn' : 'Tx'})`).openOn(map);
   });
 
   const missing = (meta.missing_inputs || []).join(', ');
