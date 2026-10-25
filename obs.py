@@ -37,6 +37,14 @@ def parse_rows(rows):
     return out
 
 
+def dedupe(series):
+    """Supprime les relevés en double (même instant) et trie par date."""
+    seen = {}
+    for p in series:
+        seen[p["t"]] = p
+    return [seen[t] for t in sorted(seen)]
+
+
 def fetch_infoclimat(ids, start, end, token, chunk=10, pause=1.0):
     """
     ids : identifiants de stations ; start, end : 'AAAA-MM-JJ' (jours UTC ; demander un jour de marge).
@@ -55,7 +63,7 @@ def fetch_infoclimat(ids, start, end, token, chunk=10, pause=1.0):
         for sid, rows in (js.get("hourly") or {}).items():
             out.setdefault(sid, []).extend(parse_rows(rows))
         time.sleep(pause)
-    return out
+    return {sid: dedupe(v) for sid, v in out.items()}
 
 
 def fetch_datacake(stations_cfg, start, end):
