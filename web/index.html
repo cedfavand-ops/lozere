@@ -27,6 +27,10 @@
   label { display: block; font-size: 12px; color: var(--muted); margin-top: 8px; }
   input[type=range] { width: 100%; }
   .leaflet-container { font-family: inherit; }
+  .chk { display: flex; align-items: center; gap: 6px; cursor: pointer; }
+  .chk input { margin: 0; }
+  .iso-label { font: 700 11px system-ui, sans-serif; color: #111; text-align: center; line-height: 14px;
+               text-shadow: 0 0 3px #fff, 0 0 3px #fff, 0 0 3px #fff, 0 0 2px #fff; white-space: nowrap; }
 </style>
 </head>
 <body>
@@ -39,17 +43,30 @@
   </div>
   <canvas id="legend"></canvas>
   <div id="scale"><span id="vmin"></span><span id="vmax"></span></div>
-  <label>Opacité <input id="op" type="range" min="0.2" max="1" step="0.05" value="0.85"></label>
+  <label>Opacité des couleurs <input id="op" type="range" min="0.2" max="1" step="0.05" value="0.85"></label>
+  <label class="chk"><input type="checkbox" id="c-bands" checked> Aplats de couleur</label>
+  <label class="chk"><input type="checkbox" id="c-lines" checked> Isolignes (fines : 1 °C, épaisses : 5 °C)</label>
+  <div id="busy" style="font-size:12px;color:var(--muted);margin-top:6px"></div>
   <div id="info">Chargement…</div>
   <div id="stale"></div>
 </div>
 
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/d3@7.9.0/dist/d3.min.js"></script>
 <script>
 const MAX_AGE_H = 30;         // au-delà, la page signale que la prévision n'a pas été mise à jour
 const NODATA = -32768;
 let meta, overlay, current = 'tn';
-const cache = {};
+const vec = { bands: null, lines: null, labels: null };
+const cache = {};          // grilles brutes (Int16)
+const fieldCache = {};     // grilles en °C (Float32, NaN = vide)
+const vcache = {};         // couches vectorielles déjà calculées, par variable
+let geoPolys = [];         // contour du département : polygones [anneaux [lat, lng]]
+
+const CONTOUR_BLUR_PASSES = 1;   // lissage supplémentaire (1-2-1) avant le tracé : bords nets mais arrondis
+const MIN_RING_AREA = 4;         // surface minimale d'un contour fermé (en mailles) : supprime les îlots minuscules
+const MIN_SPACING2 = 0.12;       // espacement minimal² entre sommets (en mailles²) : allège sans déformer
+const R_EARTH = 6378137;
 
 const fmt = iso => new Date(iso).toLocaleString('fr-FR', {
   timeZone: 'Europe/Paris', weekday: 'short', day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
@@ -84,23 +101,220 @@ function drawLegend() {
   document.getElementById('vmax').textContent = meta[current].vmax + ' °C';
 }
 
-function setVar(name, map) {
+function colorAt(t) {
+  // t entre 0 et 1 : interpolation linéaire entre les couleurs de la palette (comme la légende)
+  const p = meta.palette, n = p.length - 1;
+  const x = Math.min(Math.max(t, 0), 1) * n, i = Math.min(Math.floor(x), n - 1), f = x - i;
+  const a = p[i], b = p[i + 1];
+  const c = k => Math.round(parseInt(a.slice(1 + 2 * k, 3 + 2 * k), 16) * (1 - f)
+                          + parseInt(b.slice(1 + 2 * k, 3 + 2 * k), 16) * f);
+  return `rgb(${c(0)},${c(1)},${c(2)})`;
+}
+
+async function loadField(name) {
+  if (!fieldCache[name]) {
+    const raw = await loadBin(name);
+    const f = new Float32Array(raw.length);
+    for (let i = 0; i < raw.length; i++) f[i] = raw[i] === NODATA ? NaN : raw[i] / 10;
+    fieldCache[name] = f;
+  }
+  return fieldCache[name];
+}
+
+function blur121(f, w, h, passes) {
+  // lissage binomial 1-2-1 horizontal puis vertical, en ignorant les mailles vides (NaN)
+  let src = f;
+  for (let p = 0; p < passes; p++) {
+    const tmp = new Float32Array(src.length), dst = new Float32Array(src.length);
+    for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+      const i = y * w + x, c = src[i];
+      if (c !== c) { tmp[i] = NaN; continue; }
+      let s = 2 * c, k = 2;
+      if (x > 0 && src[i - 1] === src[i - 1]) { s += src[i - 1]; k++; }
+      if (x < w - 1 && src[i + 1] === src[i + 1]) { s += src[i + 1]; k++; }
+      tmp[i] = s / k;
+    }
+    for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+      const i = y * w + x, c = tmp[i];
+      if (c !== c) { dst[i] = NaN; continue; }
+      let s = 2 * c, k = 2;
+      if (y > 0 && tmp[i - w] === tmp[i - w]) { s += tmp[i - w]; k++; }
+      if (y < h - 1 && tmp[i + w] === tmp[i + w]) { s += tmp[i + w]; k++; }
+      dst[i] = s / k;
+    }
+    src = dst;
+  }
+  return src;
+}
+
+function ringArea(r) {
+  let a = 0;
+  for (let i = 0, n = r.length - 1; i < n; i++) a += r[i][0] * r[i + 1][1] - r[i + 1][0] * r[i][1];
+  return Math.abs(a) / 2;
+}
+
+function ringLength(r) {
+  let l = 0;
+  for (let i = 0, n = r.length - 1; i < n; i++) l += Math.hypot(r[i + 1][0] - r[i][0], r[i + 1][1] - r[i][1]);
+  return l;
+}
+
+function ringToLatLng(ring, g) {
+  // coordonnées de grille -> [lat, lng] ; écarte les sommets trop rapprochés
+  const out = [];
+  let lx = -1e9, ly = -1e9;
+  for (const pt of ring) {
+    const cx = pt[0], cy = pt[1];
+    if ((cx - lx) * (cx - lx) + (cy - ly) * (cy - ly) < MIN_SPACING2) continue;
+    lx = cx; ly = cy;
+    const X = g.x0 + cx * g.dx, Y = g.y1 - cy * g.dy;
+    out.push([(2 * Math.atan(Math.exp(Y / R_EARTH)) - Math.PI / 2) * 180 / Math.PI, X / R_EARTH * 180 / Math.PI]);
+  }
+  return out;
+}
+
+function geoPolygons(g) {
+  const geoms = g.type === 'FeatureCollection' ? g.features.map(f => f.geometry)
+              : g.type === 'Feature' ? [g.geometry] : [g];
+  const polys = [];
+  for (const gm of geoms) {
+    const ps = gm.type === 'Polygon' ? [gm.coordinates] : gm.coordinates;
+    for (const p of ps) polys.push(p.map(r => r.map(c => [c[1], c[0]])));
+  }
+  return polys;
+}
+
+function inRing(ring, lat, lng) {
+  let inside = false;
+  for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+    const yi = ring[i][0], xi = ring[i][1], yj = ring[j][0], xj = ring[j][1];
+    if (((yi > lat) !== (yj > lat)) && (lng < (xj - xi) * (lat - yi) / (yj - yi) + xi)) inside = !inside;
+  }
+  return inside;
+}
+
+function inGeo(lat, lng) {
+  for (const poly of geoPolys) {
+    if (!inRing(poly[0], lat, lng)) continue;
+    let hole = false;
+    for (let i = 1; i < poly.length; i++) if (inRing(poly[i], lat, lng)) hole = true;
+    if (!hole) return true;
+  }
+  return false;
+}
+
+async function buildVectors(name) {
+  // Aplats (une couche par degré, superposées de bas en haut) et isolignes, calculés dans le navigateur
+  // à partir de la grille de températures : tracés vectoriels, donc nets à tous les zooms.
+  const m = meta[name], w = meta.width, h = meta.height;
+  const f = blur121(await loadField(name), w, h, CONTOUR_BLUR_PASSES);
+  const [x0, y0, x1, y1] = meta.bounds_3857;
+  const g = { x0, y1, dx: (x1 - x0) / w, dy: (y1 - y0) / h };
+  const lo = Math.floor(m.min) - 1, hi = Math.ceil(m.max) + 1;
+  const levels = [];
+  for (let t = lo; t <= hi; t++) levels.push(t);
+  const conts = d3.contours().size([w, h]).thresholds(levels)(f);
+
+  const bandLayers = [], lineLayers = [], labels = [];
+  conts.forEach((c, k) => {
+    const t = levels[k];
+    const polys = [], lineRings = [], cand = [];
+    for (const poly of c.coordinates) {
+      if (ringArea(poly[0]) < MIN_RING_AREA) continue;
+      const rings = [];
+      poly.forEach((ring, ri) => {
+        if (ri > 0 && ringArea(ring) < MIN_RING_AREA) return;
+        const ll = ringToLatLng(ring, g);
+        if (ll.length < 3) return;
+        rings.push(ll);
+        lineRings.push(ll.concat([ll[0]]));
+        cand.push({ ll, len: ringLength(ring) });
+      });
+      if (rings.length) polys.push(rings);
+    }
+    if (!polys.length) return;
+    const color = colorAt((t + 0.5 - m.vmin) / (m.vmax - m.vmin));
+    bandLayers.push(L.polygon(polys, { pane: 'bands', stroke: false, fillColor: color, fillOpacity: 1,
+                                       fillRule: 'evenodd', interactive: false }));
+    const major = t % 5 === 0;
+    lineLayers.push(L.polyline(lineRings, Object.assign({ pane: 'lines', interactive: false, lineJoin: 'round' },
+      major ? { color: '#111', weight: 2.2, opacity: 0.92, lineCap: 'round' }
+            : { color: '#222', weight: 0.8, opacity: 0.55 })));
+    if (major) {
+      cand.sort((a, b) => b.len - a.len);
+      let n = 0;
+      for (const cd of cand) {
+        if (n >= 6 || cd.len < 20) break;
+        for (const fr of [0.5, 0.25, 0.75, 0.1, 0.9]) {
+          const pt = cd.ll[Math.floor(fr * (cd.ll.length - 1))];
+          if (inGeo(pt[0], pt[1])) {
+            labels.push(L.marker(pt, { pane: 'labels', interactive: false, keyboard: false,
+              icon: L.divIcon({ className: 'iso-label', html: t + '°', iconSize: [32, 14], iconAnchor: [16, 7] }) }));
+            n++;
+            break;
+          }
+        }
+      }
+    }
+  });
+  return { bands: L.layerGroup(bandLayers), lines: L.layerGroup(lineLayers), labels: L.layerGroup(labels) };
+}
+
+function clearLayers(map) {
+  for (const k of ['bands', 'lines', 'labels']) {
+    if (vec[k]) { map.removeLayer(vec[k]); vec[k] = null; }
+  }
+  if (overlay) { map.removeLayer(overlay); overlay = null; }
+}
+
+function applyToggles(map) {
+  const set = (k, on) => {
+    const l = vec[k];
+    if (!l) return;
+    if (on && !map.hasLayer(l)) map.addLayer(l);
+    if (!on && map.hasLayer(l)) map.removeLayer(l);
+  };
+  const bandsOn = document.getElementById('c-bands').checked;
+  const linesOn = document.getElementById('c-lines').checked;
+  set('bands', bandsOn);
+  set('lines', linesOn);
+  set('labels', linesOn);
+  if (overlay) overlay.setOpacity(bandsOn ? +document.getElementById('op').value : 0);
+  map.getPane('bands').style.opacity = document.getElementById('op').value;
+}
+
+async function setVar(name, map) {
   current = name;
   document.getElementById('b-tn').classList.toggle('on', name === 'tn');
   document.getElementById('b-tx').classList.toggle('on', name === 'tx');
-  const bounds = L.latLngBounds(meta.bounds_latlng);
-  if (overlay) map.removeLayer(overlay);
-  overlay = L.imageOverlay(name + '.png?v=' + encodeURIComponent(meta.generated_at), bounds,
-    { opacity: +document.getElementById('op').value, interactive: false }).addTo(map);
+  clearLayers(map);
   drawLegend();
+  const busy = document.getElementById('busy');
+  let ok = false;
+  if (typeof d3 !== 'undefined' && d3.contours) {
+    busy.textContent = 'Calcul des isolignes…';
+    try {
+      await new Promise(r => setTimeout(r, 30));          // laisse le navigateur afficher le message
+      if (!vcache[name]) vcache[name] = await buildVectors(name);
+      if (current !== name) return;                         // changement d'onglet pendant le calcul
+      Object.assign(vec, vcache[name]);
+      ok = true;
+    } catch (e) { console.error(e); }
+    busy.textContent = '';
+  }
+  if (ok) { applyToggles(map); return; }
+  // Repli : image raster (bibliothèque d'isolignes indisponible ou erreur)
+  overlay = L.imageOverlay(name + '.png?v=' + encodeURIComponent(meta.generated_at),
+    L.latLngBounds(meta.bounds_latlng), { opacity: +document.getElementById('op').value, interactive: false }).addTo(map);
 }
 
 async function init() {
   meta = await (await fetch('meta.json', {cache: 'no-store'})).json();
   const geo = await (await fetch('lozere.geojson')).json();
   const bounds = L.latLngBounds(meta.bounds_latlng);
+  geoPolys = geoPolygons(geo);
 
-  const map = L.map('map', { zoomSnap: 0.25, maxBoundsViscosity: 0.9 });
+  const map = L.map('map', { zoomSnap: 0.25, maxBoundsViscosity: 0.9, preferCanvas: true });
   map.fitBounds(bounds);
   map.setMaxBounds(bounds.pad(0.2));
   map.setMinZoom(map.getZoom() - 0.5);
@@ -115,18 +329,23 @@ async function init() {
   L.control.layers({ 'Plan IGN': ign, 'OpenStreetMap': osm }, null, { position: 'topright' }).addTo(map);
 
   // Voile blanc partout sauf à l'intérieur du département
+  map.createPane('bands').style.zIndex = 410;
+  map.createPane('lines').style.zIndex = 430;
+  map.createPane('labels').style.zIndex = 440;
   map.createPane('mask').style.zIndex = 450;
   map.createPane('border').style.zIndex = 460;
   const world = [[-85, -180], [-85, 180], [85, 180], [85, -180]];
   L.polygon([world, ...outerRings(geo)],
-    { pane: 'mask', stroke: false, fillColor: '#ffffff', fillOpacity: 0.92, interactive: false }).addTo(map);
+    { pane: 'mask', stroke: false, fillColor: '#ffffff', fillOpacity: 1, interactive: false }).addTo(map);
   L.geoJSON(geo, { pane: 'border', interactive: false,
     style: { color: '#333', weight: 1.5, fill: false } }).addTo(map);
 
   setVar('tn', map);
   document.getElementById('b-tn').onclick = () => setVar('tn', map);
   document.getElementById('b-tx').onclick = () => setVar('tx', map);
-  document.getElementById('op').oninput = e => overlay && overlay.setOpacity(+e.target.value);
+  document.getElementById('op').oninput = () => applyToggles(map);
+  document.getElementById('c-bands').onchange = () => applyToggles(map);
+  document.getElementById('c-lines').onchange = () => applyToggles(map);
 
   map.on('click', async e => {
     const p = L.CRS.EPSG3857.project(e.latlng);
@@ -134,6 +353,7 @@ async function init() {
     const col = Math.floor((p.x - x0) / ((x1 - x0) / meta.width));
     const row = Math.floor((y1 - p.y) / ((y1 - y0) / meta.height));
     if (col < 0 || row < 0 || col >= meta.width || row >= meta.height) return;
+    if (!inGeo(e.latlng.lat, e.latlng.lng)) return;      // hors Lozère : pas de valeur
     const v = (await loadBin(current))[row * meta.width + col];
     if (v === NODATA) return;
     L.popup({ closeButton: false }).setLatLng(e.latlng)
