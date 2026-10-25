@@ -140,12 +140,22 @@ async function init() {
       .setContent(`<b>${(v / 10).toFixed(1)} °C</b> (${current === 'tn' ? 'Tn' : 'Tx'})`).openOn(map);
   });
 
+  const missing = (meta.missing_inputs || []).join(', ');
+  const modelTxt = meta.model === 'icon+motif'
+    ? `Indice d'inversion : <b>${meta.alpha_mean.toFixed(2)}</b> (0 = aucune, 1 = nuit calme et claire)` +
+      (meta.wind_night_mean != null ? `<br>Vent nocturne moyen ${meta.wind_night_mean.toFixed(1)} m/s` : '') +
+      (meta.cloud_night_mean != null ? `${meta.wind_night_mean != null ? ', ' : '<br>'}nébulosité ${Math.round(meta.cloud_night_mean * 100)} %` : '') +
+      (missing ? `<br><b>Donnée ICON manquante : ${missing}</b>` : '') +
+      `<br>Structure fine d'après une thermographie ECOSTRESS du 18/04/2026.`
+    : `Carte ICON brute, sans correction à 150 m.`;
   document.getElementById('info').innerHTML =
-    `Run ICON-CH1 de ${fmt(meta.run_utc)} (12 UTC).<br>` +
+    `Run ICON-CH1 de ${new Date(meta.run_utc).getUTCHours()} UTC (${fmt(meta.run_utc)})` +
+    (meta.fallback ? ' <b>– repli, le run de 12 UTC n\'était pas disponible</b>' : '') + `<br>` +
     `Tn : ${fmt(meta.tn_window_utc[0])} → ${fmt(meta.tn_window_utc[1])}<br>` +
     `Tx : ${fmt(meta.tx_window_utc[0])} → ${fmt(meta.tx_window_utc[1])}` +
     (meta.tx_truncated_at_utc ? ` (fenêtre tronquée à ${fmt(meta.tx_truncated_at_utc)})` : '') +
-    `<br><br>Prévision expérimentale, maille ${meta.grid_m} m.<br>` +
+    `<br><br>${modelTxt}<br><br>` +
+    `Prévision expérimentale, maille ${meta.grid_m} m.<br>` +
     `Données : MeteoSuisse, ICON-CH1-EPS (OGD).`;
 
   const ageH = (Date.now() - new Date(meta.generated_at)) / 36e5;
