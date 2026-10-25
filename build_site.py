@@ -155,6 +155,14 @@ def apply_model(tn, tx, X, Y, ctx):
     alpha_pts, w_m, c_m = model.alpha_mesh(wind, c, night, len(pts))
     alpha = griddata(pts, alpha_pts, (X, Y), method="linear")
     alpha = np.where(np.isfinite(alpha), alpha, np.nanmean(alpha_pts))
+    if w_m is not None:
+        print(f"Vent nocturne à 10 m : moyenne {np.mean(w_m):.1f} m/s (mailles de {np.min(w_m):.1f} à {np.max(w_m):.1f})")
+    if c_m is not None:
+        print(f"Nébulosité nocturne : moyenne {100 * np.mean(c_m):.0f} % (mailles de {100 * np.min(c_m):.0f} à {100 * np.max(c_m):.0f} %)")
+    forced = ctx.get("force_alpha")
+    if forced is not None:
+        alpha = np.full_like(alpha, float(forced))
+        print(f"DÉMONSTRATION : indice d'inversion forcé à {float(forced):.2f} (ce n'est PAS la prévision réelle).")
 
     tn2, tx2 = model.apply_correction(tn, tx, dem, z_icon, alpha, motif)
     d_tn, d_tx = (tn2 - tn)[inside], (tx2 - tx)[inside]
@@ -174,6 +182,7 @@ def apply_model(tn, tx, X, Y, ctx):
         "wind_night_mean": None if w_m is None else float(np.mean(w_m)),
         "cloud_night_mean": None if c_m is None else float(np.mean(c_m)),
         "z_icon_source": z_src,
+        "alpha_forced": None if forced is None else float(forced),
         "missing_inputs": [n for n, a_ in (("vent", wind), ("nebulosite", c)) if a_ is None],
     }
     return tn2, tx2, info
@@ -347,6 +356,8 @@ def main():
                     help="attente maximale du run 12Z avant repli sur le 9Z")
     ap.add_argument("--no-fallback", action="store_true", help="n'utiliser que le run demandé (pas de repli 9Z)")
     ap.add_argument("--cmap", default="turbo")
+    ap.add_argument("--force-alpha", type=float, default=None,
+                    help="DÉMO : impose l'indice d'inversion (0 à 1) au lieu de la règle météo")
     args = ap.parse_args()
 
     if args.npz:
@@ -379,7 +390,7 @@ def main():
         hsurf = icon.load_hsurf()
     except Exception as e:   # réseau absent en test local, etc.
         print(f"Altitude du relief ICON indisponible ({type(e).__name__}) : repli sur le MNT lissé.")
-    ctx = {"lead_hours": d["lead_hours"], "extra": extra, "hsurf": hsurf}
+    ctx = {"lead_hours": d["lead_hours"], "extra": extra, "hsurf": hsurf, "force_alpha": args.force_alpha}
     build_site(d["lat"], d["lon"], tn_pts, tx_pts, run_utc, info,
                args.geojson, args.out, args.cmap, ctx=ctx)
     for name in ("index.html", "meta.json", "tn.png", "tx.png", "tn.bin", "tx.bin", "lozere.geojson"):
