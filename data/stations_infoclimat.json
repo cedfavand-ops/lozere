@@ -1,0 +1,146 @@
+[
+ {
+  "id": "00049",
+  "name": "Saint-Symphorien - Verrières",
+  "lat": 44.84,
+  "lon": 3.6256,
+  "elevation": 1220,
+  "license": "NON-COMMERCIAL ONLY: CC BY NC"
+ },
+ {
+  "id": "000BI",
+  "name": "Les Salces - Bonnecombe",
+  "lat": 44.53326,
+  "lon": 3.16082,
+  "elevation": 1330,
+  "license": "NON-COMMERCIAL ONLY: CC BY NC"
+ },
+ {
+  "id": "000DB",
+  "name": "Recoules-de-Fumas",
+  "lat": 44.64144,
+  "lon": 3.34532,
+  "elevation": 1040,
+  "license": "CC BY"
+ },
+ {
+  "id": "000K8",
+  "name": "Saint-Amans",
+  "lat": 44.66667,
+  "lon": 3.45,
+  "elevation": 1130,
+  "license": "NON-COMMERCIAL ONLY: CC BY NC"
+ },
+ {
+  "id": "000Q4",
+  "name": "Villefort - Mas de la Barque",
+  "lat": 44.38577,
+  "lon": 3.87494,
+  "elevation": 1420,
+  "license": "CC BY"
+ },
+ {
+  "id": "000TW",
+  "name": "Montrodat",
+  "lat": 44.55038,
+  "lon": 3.32928,
+  "elevation": 915,
+  "license": "CC BY"
+ },
+ {
+  "id": "000VE",
+  "name": "Mas-Saint-Chély - Causse Méjean",
+  "lat": 44.26691,
+  "lon": 3.39569,
+  "elevation": 923,
+  "license": "NON-COMMERCIAL ONLY: CC BY NC"
+ },
+ {
+  "id": "000X5",
+  "name": "Saint-Alban-sur-Limagnole",
+  "lat": 44.77457,
+  "lon": 3.38689,
+  "elevation": 930,
+  "license": "CC BY"
+ },
+ {
+  "id": "000YB",
+  "name": "Vialas - Nojaret",
+  "lat": 44.34022,
+  "lon": 3.90975,
+  "elevation": 680,
+  "license": "NON-COMMERCIAL ONLY: CC BY NC"
+ },
+ {
+  "id": "STATIC0029",
+  "name": "Luc - La Maguelone",
+  "lat": 44.66469,
+  "lon": 3.87959,
+  "elevation": 982,
+  "license": "CC BY"
+ },
+ {
+  "id": "STATIC0244",
+  "name": "Saint-André-de-Lancize",
+  "lat": 44.25774,
+  "lon": 3.80916,
+  "elevation": 662,
+  "license": "NON-COMMERCIAL ONLY: CC BY NC"
+ },
+ {
+  "id": "STATIC0290",
+  "name": "Chanac",
+  "lat": 44.46614,
+  "lon": 3.34326,
+  "elevation": 680,
+  "license": "NON-COMMERCIAL ONLY: CC BY NC"
+ },
+ {
+  "id": "STATIC0300",
+  "name": "Châteauneuf-de-Randon",
+  "lat": 44.6544,
+  "lon": 3.67182,
+  "elevation": 1140,
+  "license": "CC BY"
+ },
+ {
+  "id": "STATIC0311",
+  "name": "Auvers - Mont Mouchet",
+  "lat": 44.9754,
+  "lon": 3.37353,
+  "elevation": 1495,
+  "license": "CC BY"
+ },
+ {
+  "id": "STATIC0403",
+  "name": "Chamborigaud - Mas Jourdon",
+  "lat": 44.3104,
+  "lon": 3.93694,
+  "elevation": 598,
+  "license": "CC BY"
+ },
+ {
+  "id": "STATIC0430",
+  "name": "Saint-Pierre-le-Vieux",
+  "lat": 44.8496,
+  "lon": 3.32418,
+  "elevation": 976,
+  "license": "CC BY"
+ },
+ {
+  "id": "STATIC0466",
+  "name": "Pourcharesses - Morangiès",
+  "lat": 44.4713,
+  "lon": 3.92619,
+  "elevation": 650,
+  "license": "NON-COMMERCIAL ONLY: CC BY NC"
+ },
+ {
+  "id": "STATIC0467",
+  "name": "Pourcharesses - Chantegrive",
+  "lat": 44.4066,
+  "lon": 3.86963,
+  "elevation": 1220,
+  "license": "NON-COMMERCIAL ONLY: CC BY NC"
+ }
+]
