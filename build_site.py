@@ -27,6 +27,7 @@ import numpy as np
 
 TZ = ZoneInfo("Europe/Paris")
 GRID_M = 150            # maille de travail (Lambert-93)
+SMOOTH_SIGMA = 0.8      # lissage léger (en mailles de 150 m) : bords nets mais arrondis
 EXTRA_VARS = ["U_10M", "V_10M", "CLCT"]   # vent à 10 m et nébulosité, pour l'indice d'inversion
 NODATA_INT = -32768     # valeur "vide" dans les .bin (température x10 en int16)
 HERE = Path(__file__).resolve().parent
@@ -230,6 +231,16 @@ def encode_int16(arr):
 # --------------------------------------------------------------------------
 # 4. Construction du site
 # --------------------------------------------------------------------------
+def smooth_field(a, sigma=SMOOTH_SIGMA):
+    """Lissage gaussien léger ; comble d'abord les éventuelles mailles sans valeur par le plus proche voisin."""
+    from scipy.ndimage import distance_transform_edt, gaussian_filter
+    bad = ~np.isfinite(a)
+    if bad.any():
+        idx = distance_transform_edt(bad, return_distances=False, return_indices=True)
+        a = a[tuple(idx)]
+    return gaussian_filter(a, sigma, mode="nearest").astype("float32")
+
+
 def build_site(lat, lon, tn_pts, tx_pts, run_utc, win_info, geojson, out_dir, cmap="turbo", ctx=None):
     from pyproj import Transformer
     from rasterio.features import geometry_mask
@@ -251,6 +262,8 @@ def build_site(lat, lon, tn_pts, tx_pts, run_utc, win_info, geojson, out_dir, cm
     inside = geometry_mask([geom_l93], out_shape=(h, w), transform=transform, invert=True)
     ctx = dict(ctx or {}, run_utc=run_utc, pts=pts, lat=lat, lon=lon, inside=inside)
     tn, tx, model_info = apply_model(tn, tx, X, Y, ctx)
+    tn, tx = smooth_field(tn), smooth_field(tx)          # lissage léger : bords nets mais arrondis
+    tn_full, tx_full = tn.copy(), tx.copy()              # champs sur toute l'emprise (pour les contours)
     tn[~inside] = np.nan
     tx[~inside] = np.nan
 
@@ -264,11 +277,12 @@ def build_site(lat, lon, tn_pts, tx_pts, run_utc, win_info, geojson, out_dir, cm
         **win_info,
         **model_info,
     }
-    for name, arr in (("tn", tn), ("tx", tx)):
+    for name, arr, arr_full in (("tn", tn, tn_full), ("tx", tx, tx_full)):
         merc, bounds = to_mercator(arr, transform)
         vmin, vmax = color_scale(merc)
         colorize(merc, vmin, vmax, cmap).save(out / f"{name}.png", optimize=True)
-        (out / f"{name}.bin").write_bytes(encode_int16(merc))
+        merc_full, _ = to_mercator(arr_full, transform)
+        (out / f"{name}.bin").write_bytes(encode_int16(merc_full))   # champ complet : contours et lecture au clic
         meta[name] = {"vmin": vmin, "vmax": vmax,
                       "min": float(np.nanmin(merc)), "max": float(np.nanmax(merc))}
         meta["width"], meta["height"] = int(merc.shape[1]), int(merc.shape[0])
