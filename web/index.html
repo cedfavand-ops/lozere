@@ -361,13 +361,19 @@ async function init() {
   });
 
   const missing = (meta.missing_inputs || []).join(', ');
-  const modelTxt = meta.model === 'icon+motif'
+  const demo = meta.alpha_forced != null;
+  if (demo) document.title = 'DÉMO – ' + document.title;
+  const demoTxt = demo
+    ? `<b style="color:var(--warn)">DÉMONSTRATION : indice d'inversion forcé à ${meta.alpha_forced.toFixed(2)}. ` +
+      `Ce n'est pas la prévision réelle ; elle montre l'effet du motif d'inversion.</b><br>`
+    : `<a href="demo/" style="color:var(--accent)">Voir la démonstration (inversion forcée à 1)</a><br>`;
+  const modelTxt = demoTxt + (meta.model === 'icon+motif'
     ? `Indice d'inversion : <b>${meta.alpha_mean.toFixed(2)}</b> (0 = aucune, 1 = nuit calme et claire)` +
       (meta.wind_night_mean != null ? `<br>Vent nocturne moyen ${meta.wind_night_mean.toFixed(1)} m/s` : '') +
       (meta.cloud_night_mean != null ? `${meta.wind_night_mean != null ? ', ' : '<br>'}nébulosité ${Math.round(meta.cloud_night_mean * 100)} %` : '') +
       (missing ? `<br><b>Donnée ICON manquante : ${missing}</b>` : '') +
       `<br>Structure fine d'après une thermographie ECOSTRESS du 18/04/2026.`
-    : `Carte ICON brute, sans correction à 150 m.`;
+    : `Carte ICON brute, sans correction à 150 m.`);
   document.getElementById('info').innerHTML =
     `Run ICON-CH1 de ${new Date(meta.run_utc).getUTCHours()} UTC (${fmt(meta.run_utc)})` +
     (meta.fallback ? ' <b>– repli, le run de 12 UTC n\'était pas disponible</b>' : '') + `<br>` +
