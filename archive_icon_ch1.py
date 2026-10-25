@@ -104,7 +104,7 @@ LON_NAMES = ("CLON", "tlon")
 
 def read_full_grid(grib_path: Path):
     """Lit lat/lon des mailles dans le fichier statique de MeteoSwiss (qui contient aussi d'autres champs)."""
-    wanted = set(LAT_NAMES + LON_NAMES)
+    wanted = set(LAT_NAMES + LON_NAMES + ("h",))   # 'h' = altitude du relief ICON (si présent)
     fields, seen = {}, []
     with open(grib_path, "rb") as f:
         while True:
@@ -132,7 +132,7 @@ def read_full_grid(grib_path: Path):
     if not (30 < float(np.nanmean(lat)) < 60 and -10 < float(np.nanmean(lon)) < 30):
         raise RuntimeError(f"Coordonnées incohérentes (lat moyenne {np.nanmean(lat):.1f}, "
                            f"lon moyenne {np.nanmean(lon):.1f}) ; messages vus : {seen}")
-    return lat, lon
+    return lat, lon, fields.get("h")
 
 
 def get_grid(force: bool = False):
@@ -147,7 +147,7 @@ def get_grid(force: bool = False):
     with tempfile.TemporaryDirectory() as tmp:
         p = Path(tmp) / "horizontal.grib2"
         download(href, p)
-        lat, lon = read_full_grid(p)
+        lat, lon, hs = read_full_grid(p)
     print(f"Grille complète : {lat.size} mailles ; "
           f"lat {lat.min():.2f}..{lat.max():.2f} ; lon {lon.min():.2f}..{lon.max():.2f}")
     mask = (
@@ -156,8 +156,16 @@ def get_grid(force: bool = False):
     )
     idx = np.flatnonzero(mask)
     np.savez_compressed(GRID_CACHE, idx=idx, lat=lat[idx], lon=lon[idx],
+                        hsurf=(hs[idx] if hs is not None else np.array([])),
                         dom=np.array([lat.min(), lat.max(), lon.min(), lon.max()]))
     return idx, lat[idx], lon[idx]
+
+
+def load_hsurf():
+    """Altitude du relief ICON aux mailles retenues (même ordre que lat/lon), ou None si indisponible."""
+    get_grid()
+    d = np.load(GRID_CACHE)
+    return d["hsurf"] if "hsurf" in d.files and d["hsurf"].size else None
 
 
 def check_domain():

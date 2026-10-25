@@ -27,6 +27,7 @@ import numpy as np
 
 TZ = ZoneInfo("Europe/Paris")
 GRID_M = 150            # maille de travail (Lambert-93)
+EXTRA_VARS = ["U_10M", "V_10M", "CLCT"]   # vent à 10 m et nébulosité, pour l'indice d'inversion
 NODATA_INT = -32768     # valeur "vide" dans les .bin (température x10 en int16)
 HERE = Path(__file__).resolve().parent
 
@@ -91,15 +92,90 @@ def target_grid(geom_l93):
     return transform, X, Y
 
 
+def load_layers(shape):
+    """MNT 150 m et motif d'inversion, sur la grille de la carte ; (None, None) si absents ou incompatibles."""
+    dem_p, motif_p = HERE / "data" / "dem_150m_l93.tif", HERE / "data" / "motif_150m_l93.tif"
+    if not (dem_p.exists() and motif_p.exists()):
+        return None, None
+    import rasterio
+    with rasterio.open(dem_p) as d:
+        dem = d.read(1).astype("float32")
+    with rasterio.open(motif_p) as m:
+        motif = m.read(2).astype("float32")
+    if dem.shape != shape or motif.shape != shape:
+        print(f"Couches MNT/motif de taille {dem.shape}/{motif.shape} != grille {shape} : relancer 'Préparer les données'.")
+        return None, None
+    return dem, np.nan_to_num(motif, nan=0.0)
+
+
 def apply_model(tn, tx, X, Y, ctx):
     """
-    POINT D'ENTRÉE DU MODÈLE 150 m.
-    tn, tx : champs ICON interpolés sur la grille 150 m (Lambert-93), en °C.
-    X, Y   : coordonnées Lambert-93 du centre de chaque maille.
-    ctx    : dict (date, run, etc.) ; y ajouter ensuite MNT, motif ECOSTRESS, coefficient alpha...
-    Doit renvoyer (tn, tx) corrigés. Pour l'instant : identité.
+    Correction 150 m (voir model.py). tn, tx : champs ICON interpolés sur la grille 150 m, en °C.
+    ctx : pts (mailles ICON en Lambert-93), lat, lon, lead_hours, run_utc, extra (U_10M, V_10M, CLCT),
+          hsurf (altitude du relief ICON), inside (masque du département).
+    Renvoie (tn, tx, info) ; sans MNT/motif, renvoie ICON brut.
     """
-    return tn, tx
+    import model
+    from scipy.interpolate import griddata
+    from scipy.ndimage import gaussian_filter
+
+    info = {"model": "icon_brut"}
+    dem, motif = load_layers(X.shape)
+    if dem is None:
+        print("MNT ou motif absent : carte = ICON brut interpolé (sans correction).")
+        return tn, tx, info
+
+    pts, inside = ctx["pts"], ctx["inside"]
+
+    # Altitude du relief vu par ICON : champ 'h' du fichier de grille s'il est cohérent avec le MNT,
+    # sinon MNT lissé à l'échelle d'une maille ICON.
+    z_icon, z_src = None, "mnt_lisse"
+    hs = ctx.get("hsurf")
+    if hs is not None and len(hs) == len(pts):
+        zg = griddata(pts, hs, (X, Y), method="linear")
+        ok, r, mad = model.hsurf_ok(zg, dem)
+        print(f"Relief ICON (champ h) vs MNT : corrélation {r:.2f}, écart moyen {mad:.0f} m -> "
+              f"{'utilisé' if ok else 'REJETÉ (incohérent)'}")
+        if ok:
+            z_icon, z_src = zg, "icon_h"
+    if z_icon is None:
+        z_icon = gaussian_filter(dem, 500.0 / GRID_M, mode="nearest")
+        print("Relief ICON : MNT lissé sur ~1 km (champ h indisponible ou rejeté).")
+    z_icon = np.where(np.isfinite(z_icon), z_icon, gaussian_filter(dem, 500.0 / GRID_M, mode="nearest"))
+
+    # Indice d'inversion alpha à partir des prévisions ICON de la nuit
+    extra = ctx.get("extra", {})
+    u, v, c = extra.get("U_10M"), extra.get("V_10M"), extra.get("CLCT")
+    wind = np.hypot(u, v) if (u is not None and v is not None) else None
+    for name, arr in (("vent (U_10M, V_10M)", wind), ("nébulosité (CLCT)", c)):
+        if arr is None:
+            print(f"ATTENTION : {name} indisponible -> facteur neutre (0,5).")
+    night = model.night_leads(ctx["lead_hours"], ctx["run_utc"], float(np.mean(ctx["lat"])), float(np.mean(ctx["lon"])))
+    alpha_pts, w_m, c_m = model.alpha_mesh(wind, c, night, len(pts))
+    alpha = griddata(pts, alpha_pts, (X, Y), method="linear")
+    alpha = np.where(np.isfinite(alpha), alpha, np.nanmean(alpha_pts))
+
+    tn2, tx2 = model.apply_correction(tn, tx, dem, z_icon, alpha, motif)
+    d_tn, d_tx = (tn2 - tn)[inside], (tx2 - tx)[inside]
+    print(f"Nuit retenue : {int(night.sum())} échéances ; alpha moyen {alpha[inside].mean():.2f} "
+          f"(min {alpha[inside].min():.2f}, max {alpha[inside].max():.2f})")
+    print(f"Correction Tn : médiane {np.median(d_tn):+.2f} °C, de {d_tn.min():+.1f} à {d_tn.max():+.1f} ; "
+          f"correction Tx : médiane {np.median(d_tx):+.2f} °C, de {d_tx.min():+.1f} à {d_tx.max():+.1f}")
+    if max(np.abs(d_tn).max(), np.abs(d_tx).max()) > 8:
+        print("ATTENTION : correction supérieure à 8 °C en certains points, à vérifier.")
+
+    info = {
+        "model": "icon+motif",
+        "alpha_mean": float(alpha[inside].mean()),
+        "alpha_min": float(alpha[inside].min()),
+        "alpha_max": float(alpha[inside].max()),
+        "night_hours": int(night.sum()),
+        "wind_night_mean": None if w_m is None else float(np.mean(w_m)),
+        "cloud_night_mean": None if c_m is None else float(np.mean(c_m)),
+        "z_icon_source": z_src,
+        "missing_inputs": [n for n, a_ in (("vent", wind), ("nebulosite", c)) if a_ is None],
+    }
+    return tn2, tx2, info
 
 
 def to_mercator(arr, transform):
@@ -154,7 +230,7 @@ def encode_int16(arr):
 # --------------------------------------------------------------------------
 # 4. Construction du site
 # --------------------------------------------------------------------------
-def build_site(lat, lon, tn_pts, tx_pts, run_utc, win_info, geojson, out_dir, cmap="turbo"):
+def build_site(lat, lon, tn_pts, tx_pts, run_utc, win_info, geojson, out_dir, cmap="turbo", ctx=None):
     from pyproj import Transformer
     from rasterio.features import geometry_mask
     from rasterio.warp import transform_bounds
@@ -172,9 +248,9 @@ def build_site(lat, lon, tn_pts, tx_pts, run_utc, win_info, geojson, out_dir, cm
     tn = griddata(pts, tn_pts, (X, Y), method="linear").astype("float32")
     tx = griddata(pts, tx_pts, (X, Y), method="linear").astype("float32")
 
-    tn, tx = apply_model(tn, tx, X, Y, {"run_utc": run_utc})
-
     inside = geometry_mask([geom_l93], out_shape=(h, w), transform=transform, invert=True)
+    ctx = dict(ctx or {}, run_utc=run_utc, pts=pts, lat=lat, lon=lon, inside=inside)
+    tn, tx, model_info = apply_model(tn, tx, X, Y, ctx)
     tn[~inside] = np.nan
     tx[~inside] = np.nan
 
@@ -186,6 +262,7 @@ def build_site(lat, lon, tn_pts, tx_pts, run_utc, win_info, geojson, out_dir, cm
         "grid_m": GRID_M,
         "palette": palette_hex(cmap),
         **win_info,
+        **model_info,
     }
     for name, arr in (("tn", tn), ("tx", tx)):
         merc, bounds = to_mercator(arr, transform)
@@ -242,7 +319,7 @@ def fetch_run(refs, wait_minutes):
     if chosen is None:
         raise RuntimeError("Aucun des runs demandés n'est complet : "
                            + ", ".join(f"{r:%d/%m %H} UTC" for r in refs))
-    icon.archive_run(chosen, ["T_2M"])
+    icon.archive_run(chosen, ["T_2M"] + EXTRA_VARS)
     return icon.OUT_DIR / f"{chosen:%Y%m%dT%H}Z_T_2M.npz"
 
 
@@ -272,8 +349,25 @@ def main():
         sys.exit(f"Ce pipeline n'utilise que les runs 12Z (ou 9Z en repli) ; reçu : {run_utc:%H} UTC.")
     tn_pts, tx_pts, info = tn_tx(d["values"], d["lead_hours"], run_utc)
     info["fallback"] = run_utc.hour != 12
+
+    extra = {}
+    for var in EXTRA_VARS:
+        pv = npz.with_name(npz.name.replace("_T_2M", f"_{var}"))
+        if pv.exists():
+            dv = np.load(pv)
+            if dv["values"].shape == d["values"].shape:
+                extra[var] = dv["values"]
+                continue
+        print(f"Variable {var} absente ou incomplète pour ce run.")
+    hsurf = None
+    try:
+        import archive_icon_ch1 as icon
+        hsurf = icon.load_hsurf()
+    except Exception as e:   # réseau absent en test local, etc.
+        print(f"Altitude du relief ICON indisponible ({type(e).__name__}) : repli sur le MNT lissé.")
+    ctx = {"lead_hours": d["lead_hours"], "extra": extra, "hsurf": hsurf}
     build_site(d["lat"], d["lon"], tn_pts, tx_pts, run_utc, info,
-               args.geojson, args.out, args.cmap)
+               args.geojson, args.out, args.cmap, ctx=ctx)
     for name in ("index.html", "meta.json", "tn.png", "tx.png", "tn.bin", "tx.bin", "lozere.geojson"):
         if not (Path(args.out) / name).exists():
             sys.exit(f"Construction incomplète : {name} manquant dans {args.out}/")
