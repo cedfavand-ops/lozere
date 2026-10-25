@@ -8,7 +8,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write   # pour archiver la prévision aux stations (history/)
   pages: write
   id-token: write
 
@@ -52,6 +52,16 @@ jobs:
       - name: Page de démonstration (indice d'inversion forcé à 1)
         continue-on-error: true
         run: python build_site.py --out site/demo --force-alpha 1 --npz "$(ls archive_icon_ch1/*_T_2M.npz | tail -1)"
+
+      - name: Archiver la prévision aux stations (historique)
+        continue-on-error: true
+        run: |
+          git config user.name "github-actions"
+          git config user.email "github-actions@users.noreply.github.com"
+          git add history/
+          git commit -m "Prévision du $(date -u +%F)" || echo "Rien à archiver"
+          git pull --rebase
+          git push
 
       - uses: actions/configure-pages@v5
 
