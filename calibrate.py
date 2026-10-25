@@ -133,16 +133,28 @@ def station_motif(stations):
     return m
 
 
-def fetch_history(ids, d0, d1, token, span_days=15):
+def fetch_history(ids, d0, d1, token, span_days=6, step_days=5, per_request=9):
+    """
+    Historique des stations par tranches de 7 jours au plus (limite de l'API : end - start <= 6 jours).
+    Les tranches se recouvrent de 1 à 2 jours, au cas où le dernier jour demandé serait exclu ; les doublons
+    sont supprimés. Les dates ne dépassent pas aujourd'hui.
+    """
+    today = dt.datetime.now(UTC).date()
     series = {}
     d = d0 - dt.timedelta(days=1)
-    while d <= d1 + dt.timedelta(days=1):
-        e = d + dt.timedelta(days=span_days)
-        part = obs.fetch_infoclimat(ids, d.isoformat(), e.isoformat(), token, chunk=6)
+    last = min(d1 + dt.timedelta(days=1), today)
+    n_req = 0
+    while d <= last:
+        e = min(d + dt.timedelta(days=span_days), today)
+        part = obs.fetch_infoclimat(ids, d.isoformat(), e.isoformat(), token, chunk=per_request)
         for sid, rows in part.items():
             series[sid] = obs.dedupe(series.get(sid, []) + rows)
+        n_req += 1
         print(f"  observations {d} -> {e} : {sum(len(v) for v in part.values())} relevés")
-        d = e
+        if e >= last:
+            break
+        d += dt.timedelta(days=step_days)
+    print(f"  {n_req} tranches de dates récupérées")
     return series
 
 

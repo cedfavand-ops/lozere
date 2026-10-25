@@ -47,7 +47,8 @@ def dedupe(series):
 
 def fetch_infoclimat(ids, start, end, token, chunk=10, pause=1.0):
     """
-    ids : identifiants de stations ; start, end : 'AAAA-MM-JJ' (jours UTC ; demander un jour de marge).
+    ids : identifiants de stations ; start, end : 'AAAA-MM-JJ' (jours UTC).
+    LIMITE DE L'API : 7 jours consécutifs au maximum par requête (sauf pour ses propres stations).
     Renvoie {id: [observations]} ; lève une erreur explicite si l'API répond autrement que « OK ».
     """
     out = {}
@@ -56,7 +57,9 @@ def fetch_infoclimat(ids, start, end, token, chunk=10, pause=1.0):
         params = [("version", "2"), ("method", "get"), ("format", "json"),
                   ("start", start), ("end", end), ("token", token)] + [("stations[]", s) for s in part]
         r = requests.get(INFOCLIMAT_URL, params=params, timeout=120)
-        r.raise_for_status()
+        if r.status_code != 200:
+            raise RuntimeError(f"Infoclimat : HTTP {r.status_code} pour {len(part)} stations du {start} au {end}. "
+                               f"Réponse : {r.text[:300]!r}")
         js = r.json()
         if js.get("status") != "OK":
             raise RuntimeError(f"Infoclimat : statut {js.get('status')!r}, erreurs {js.get('errors')}")
