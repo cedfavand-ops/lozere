@@ -1,0 +1,47 @@
+name: Calibrer l'indice d'inversion (observations des stations)
+
+on:
+  workflow_dispatch:
+    inputs:
+      start:
+        description: "Première nuit (AAAA-MM-JJ) ; vide = 150 jours avant hier"
+        required: false
+      end:
+        description: "Dernière nuit (AAAA-MM-JJ) ; vide = hier"
+        required: false
+
+permissions:
+  contents: write   # enregistre history/alpha_obs.csv et history/alpha_obs.png
+
+jobs:
+  calibrate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      PYTHONUNBUFFERED: "1"
+      INFOCLIMAT_TOKEN: ${{ secrets.INFOCLIMAT_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Dépendances
+        run: pip install numpy scipy rasterio pyproj requests matplotlib
+
+      - name: Calibration
+        run: |
+          ARGS=""
+          if [ -n "${{ inputs.start }}" ]; then ARGS="$ARGS --start ${{ inputs.start }}"; fi
+          if [ -n "${{ inputs.end }}" ]; then ARGS="$ARGS --end ${{ inputs.end }}"; fi
+          python calibrate.py $ARGS
+
+      - name: Enregistrer les résultats dans le dépôt
+        run: |
+          git config user.name "github-actions"
+          git config user.email "github-actions@users.noreply.github.com"
+          git add history/alpha_obs.csv history/alpha_obs.png
+          git commit -m "Calibration de l'indice d'inversion" || echo "Rien à enregistrer"
+          git pull --rebase
+          git push
