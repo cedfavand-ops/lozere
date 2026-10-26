@@ -24,7 +24,7 @@ jobs:
           python-version: "3.12"
 
       - name: Dépendances
-        run: pip install numpy requests
+        run: pip install --prefer-binary numpy requests
 
       - name: Comparer prévisions et observations
         run: python verify.py

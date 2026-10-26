@@ -34,7 +34,7 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y libeccodes-dev
 
       - name: Dépendances Python
-        run: pip install -r requirements.txt
+        run: pip install --prefer-binary -r requirements.txt
 
       - name: Diagnostic grille ICON (lancement manuel uniquement)
         if: github.event_name == 'workflow_dispatch'
