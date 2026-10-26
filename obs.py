@@ -5,11 +5,17 @@ Observations des stations.
     https://www.infoclimat.fr/opendata/?version=2&method=get&format=json&stations[]=ID&start=AAAA-MM-JJ&end=AAAA-MM-JJ&token=...
     Réponse : {"status": "OK", "stations": [...], "hourly": {"ID": [ {"dh_utc": "...", "temperature": ..., ...} ]}}
     Les données sont au pas d'environ 10 min (stations amateurs StatIC) ou horaire (SYNOP).
+  - Météo-France : données climatologiques de base HORAIRES (open data, Licence Ouverte), par département,
+    via l'API de data.gouv.fr ; heures en UTC ; mise à jour quotidienne (donc avec un jour de retard environ).
   - Datacake : à brancher dans fetch_datacake() (voir plus bas).
 
 Licences : certaines stations sont en CC BY-NC (usage non commercial) ; citer « infoclimat.fr » comme source.
 """
+import csv
 import datetime as dt
+import gzip
+import io
+import re
 import time
 
 import requests
@@ -69,6 +75,105 @@ def fetch_infoclimat(ids, start, end, token, chunk=10, pause=1.0):
     return {sid: dedupe(v) for sid, v in out.items()}
 
 
+# ----------------------------------------------------------------------------- Météo-France (open data)
+DATAGOUV_API = "https://www.data.gouv.fr/api/1/datasets/"
+MF_DATASETS = {
+    "principales": "donnees-climatologiques-de-base-horaires",
+    "complementaires": "donnees-climatologiques-de-base-horaires-stations-complementaires",
+}
+MF_LICENSE = "Licence Ouverte (Météo-France)"
+
+
+def select_resources(resources, dept, y0, y1):
+    """
+    Fichiers départementaux (csv.gz) du jeu de données dont la période recoupe [y0, y1].
+    Les noms ne sont pas figés : on repère le numéro de département et, s'ils figurent, les années du titre.
+    """
+    out = []
+    for r in resources:
+        title = r.get("title") or ""
+        url = r.get("url") or ""
+        fmt = (r.get("format") or "") + url
+        if "csv" not in fmt.lower() or r.get("type", "main") != "main":
+            continue
+        if not re.search(rf"(?:^|[_\-/]){re.escape(dept)}(?:[_\-.]|$)", title) and \
+           not re.search(rf"(?:departement_|[/_]H_|[/_]HOR_){re.escape(dept)}[_.]", url):
+            continue
+        years = [int(y) for y in re.findall(r"(?<!\d)((?:19|20)\d{2})(?!\d)", title)]
+        if years and (max(years) < y0 or min(years) > y1):
+            continue
+        out.append(r)
+    return out
+
+
+def parse_mf_csv(lines, d0=None, d1=None):
+    """
+    Lignes d'un CSV horaire Météo-France (séparateur « ; ») -> (stations, séries).
+    Colonnes utilisées : NUM_POSTE, NOM_USUEL, LAT, LON, ALTI, AAAAMMJJHH (UTC), T, TN, TX, FF.
+    Renvoie ({id: {name, lat, lon, elevation}}, {id: [observations]}).
+    """
+    reader = csv.DictReader(lines, delimiter=";")
+    cols = reader.fieldnames or []
+    missing = [c for c in ("NUM_POSTE", "AAAAMMJJHH") if c not in cols]
+    if missing or not any(c in cols for c in ("T", "TN", "TX")):
+        raise RuntimeError(f"CSV Météo-France inattendu : colonnes {cols[:40]}")
+
+    def num(row, k):
+        v = row.get(k)
+        if v is None or v.strip() == "":
+            return None
+        try:
+            return float(v.replace(",", "."))
+        except ValueError:
+            return None
+
+    stations, series = {}, {}
+    for row in reader:
+        try:
+            t = dt.datetime.strptime(row["AAAAMMJJHH"].strip(), "%Y%m%d%H").replace(tzinfo=UTC)
+        except (ValueError, KeyError, AttributeError):
+            continue
+        if (d0 and t.date() < d0) or (d1 and t.date() > d1):
+            continue
+        sid = row["NUM_POSTE"].strip()
+        temp, tmin, tmax = num(row, "T"), num(row, "TN"), num(row, "TX")
+        if temp is None and tmin is None and tmax is None:
+            continue
+        if sid not in stations:
+            stations[sid] = {"name": (row.get("NOM_USUEL") or sid).strip(), "lat": num(row, "LAT"),
+                             "lon": num(row, "LON"), "elevation": num(row, "ALTI")}
+        series.setdefault(sid, []).append({"t": t, "temp": temp, "tmin": tmin, "tmax": tmax,
+                                           "wind_ms": num(row, "FF")})
+    return stations, series
+
+
+def fetch_meteofrance(d0, d1, dept="48", datasets=("principales", "complementaires")):
+    """
+    Observations horaires des stations Météo-France du département entre les dates d0 et d1 (objets date).
+    Renvoie (stations, séries) ; les identifiants sont ceux de NUM_POSTE (ex. « 48095001 »).
+    Hypothèse à confirmer au premier lancement : TN/TX = extrêmes de l'heure ; T = température à l'heure pleine.
+    """
+    stations, series = {}, {}
+    for name in datasets:
+        slug = MF_DATASETS[name]
+        r = requests.get(DATAGOUV_API + slug + "/", timeout=180)
+        if r.status_code != 200:
+            raise RuntimeError(f"data.gouv.fr : HTTP {r.status_code} pour {slug} ({r.text[:200]!r})")
+        files = select_resources(r.json().get("resources", []), dept, d0.year, d1.year)
+        print(f"  Météo-France ({name}) : {len(files)} fichier(s) pour le département {dept}")
+        for f in files:
+            resp = requests.get(f["url"], timeout=300)
+            resp.raise_for_status()
+            text = gzip.decompress(resp.content).decode("utf-8", errors="replace")
+            st, se = parse_mf_csv(io.StringIO(text), d0, d1)
+            for sid, meta in st.items():
+                meta["dataset"] = name
+                stations.setdefault(sid, meta)
+            for sid, rows in se.items():
+                series[sid] = dedupe(series.get(sid, []) + rows)
+    return stations, series
+
+
 def fetch_datacake(stations_cfg, start, end):
     """
     À BRANCHER : récupération des 4 stations Datacake (sous abri, normes OMM).
@@ -86,7 +191,10 @@ def window_extreme(series, t0, t1, kind, min_cov=0.8):
     Renvoie None si la couverture est inférieure à min_cov (part des relevés attendus), sinon
     {"value", "coverage", "step_min"} (step_min = pas de mesure : un pas horaire sous-estime les extrêmes).
     """
-    pts = sorted((p["t"], p["temp"]) for p in series if p.get("temp") is not None and t0 <= p["t"] <= t1)
+    key = "tmin" if kind == "min" else "tmax"
+    # extrême propre à chaque relevé quand il existe (Météo-France : TN/TX horaires), sinon la température
+    pts = sorted((p["t"], p[key] if p.get(key) is not None else p["temp"]) for p in series
+                 if (p.get(key) is not None or p.get("temp") is not None) and t0 <= p["t"] <= t1)
     if len(pts) < 3:
         return None
     steps = sorted((b[0] - a[0]).total_seconds() / 60 for a, b in zip(pts, pts[1:]))
