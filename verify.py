@@ -134,7 +134,10 @@ def main():
             if not token:
                 print(f"{rec['day']} : INFOCLIMAT_TOKEN absent, stations Infoclimat ignorées.")
             else:
-                series.update(obs.fetch_infoclimat(ic_ids, d_start.isoformat(), d_end.isoformat(), token))
+                try:
+                    series.update(obs.fetch_infoclimat(ic_ids, d_start.isoformat(), d_end.isoformat(), token))
+                except obs.InfoclimatIPError as e:
+                    print(f"{rec['day']} : {e} Stations Infoclimat ignorées.")
         if any(s["source"] == "meteofrance" for s in pending):
             try:
                 _, mf = obs.fetch_meteofrance(d_start, d_end)

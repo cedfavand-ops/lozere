@@ -239,9 +239,10 @@ def main():
     args = ap.parse_args()
     d0, d1 = dt.date.fromisoformat(args.start), dt.date.fromisoformat(args.end)
     token = os.environ.get("INFOCLIMAT_TOKEN")
-    if not token:
-        sys.exit("INFOCLIMAT_TOKEN absent (secret du dépôt requis).")
     stations = [s for s in load_stations() if s["source"] in ("infoclimat", "meteofrance")]
+    if not token:
+        print("INFOCLIMAT_TOKEN absent : stations Infoclimat ignorées.")
+        stations = [s for s in stations if s["source"] != "infoclimat"]
     if not stations:
         sys.exit("Aucune station : lancer d'abord « Lister les stations Infoclimat ».")
     motif = station_motif(stations)
@@ -249,7 +250,16 @@ def main():
     print(f"{len(stations)} stations, {len(keep)} dans la grille du motif ; période {d0} -> {d1}")
     stations = [stations[i] for i in keep]
     motif = motif[keep]
-    series = fetch_history([s["id"] for s in stations if s["source"] == "infoclimat"], d0, d1, token)
+    series = {}
+    ic_ids = [s["id"] for s in stations if s["source"] == "infoclimat"]
+    if ic_ids:
+        try:
+            series = fetch_history(ic_ids, d0, d1, token)
+        except obs.InfoclimatIPError as e:
+            print(f"ATTENTION : {e}\n  Stations Infoclimat ignorées ; la calibration continue avec les autres sources.")
+            keep = [i for i, s in enumerate(stations) if s["source"] != "infoclimat"]
+            stations = [stations[i] for i in keep]
+            motif = motif[keep]
     if any(s["source"] == "meteofrance" for s in stations):
         _, mf = obs.fetch_meteofrance(d0 - dt.timedelta(days=1), d1 + dt.timedelta(days=1))
         for s in stations:

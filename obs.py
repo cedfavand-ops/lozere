@@ -51,6 +51,10 @@ def dedupe(series):
     return [seen[t] for t in sorted(seen)]
 
 
+class InfoclimatIPError(RuntimeError):
+    """La clé API Infoclimat est liée à une adresse IP : inutilisable depuis les serveurs de GitHub (IP variables)."""
+
+
 def fetch_infoclimat(ids, start, end, token, chunk=10, pause=1.0):
     """
     ids : identifiants de stations ; start, end : 'AAAA-MM-JJ' (jours UTC).
@@ -63,6 +67,9 @@ def fetch_infoclimat(ids, start, end, token, chunk=10, pause=1.0):
         params = [("version", "2"), ("method", "get"), ("format", "json"),
                   ("start", start), ("end", end), ("token", token)] + [("stations[]", s) for s in part]
         r = requests.get(INFOCLIMAT_URL, params=params, timeout=120)
+        if "wrong ip" in r.text.lower():
+            raise InfoclimatIPError("Infoclimat : « Wrong IP address » (la clé n'est valable que depuis l'adresse IP "
+                                    "enregistrée ; les serveurs GitHub ont des IP variables).")
         if r.status_code != 200:
             raise RuntimeError(f"Infoclimat : HTTP {r.status_code} pour {len(part)} stations du {start} au {end}. "
                                f"Réponse : {r.text[:300]!r}")
