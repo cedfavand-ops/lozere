@@ -1,0 +1,263 @@
+[
+ {
+  "id": "48004001",
+  "name": "ALTIER",
+  "lat": 44.494,
+  "lon": 3.852,
+  "elevation": 900.0,
+  "license": "Licence Ouverte (Météo-France)",
+  "dataset": "principales"
+ },
+ {
+  "id": "48009001",
+  "name": "AUMONT AUBRAC",
+  "lat": 44.72717,
+  "lon": 3.27983,
+  "elevation": 1018.0,
+  "license": "Licence Ouverte (Météo-France)",
+  "dataset": "principales"
+ },
+ {
+  "id": "48020003",
+  "name": "BASSURELS",
+  "lat": 44.1965,
+  "lon": 3.63067,
+  "elevation": 1042.0,
+  "license": "Licence Ouverte (Météo-France)",
+  "dataset": "principales"
+ },
+ {
+  "id": "48027002",
+  "name": "LE BLEYMARD BOURG",
+  "lat": 44.50467,
+  "lon": 3.73767,
+  "elevation": 1199.0,
+  "license": "Licence Ouverte (Météo-France)",
+  "dataset": "principales"
+ },
+ {
+  "id": "48027003",
+  "name": "LE BLEYMARD_SAPC",
+  "lat": 44.4515,
+  "lon": 3.74817,
+  "elevation": 1418.0,
+  "license": "Licence Ouverte (Météo-France)",
+  "dataset": "principales"
+ },
+ {
+  "id": "48032003",
+  "name": "LE BUISSON",
+  "lat": 44.63333,
+  "lon": 3.23817,
+  "elevation": 1088.0,
+  "license": "Licence Ouverte (Météo-France)",
+  "dataset": "principales"
+ },
+ {
+  "id": "48036001",
+  "name": "CASSAGNAS",
+  "lat": 44.27033,
+  "lon": 3.74683,
+  "elevation": 801.0,
+  "license": "Licence Ouverte (Météo-France)",
+  "dataset": "principales"
+ },
+ {
+  "id": "48043001",
+  "name": "CHATEAUNEUF-DE-RANDON",
+  "lat": 44.63817,
+  "lon": 3.67983,
+  "elevation": 1247.0,
+  "license": "Licence Ouverte (Météo-France)",
+  "dataset": "principales"
+ },
+ {
+  "id": "48045004",
+  "name": "CHAUDEYRAC",
+  "lat": 44.6595,
+  "lon": 3.77967,
+  "elevation": 1225.0,
+  "license": "Licence Ouverte (Météo-France)",
+  "dataset": "principales"
+ },
+ {
+  "id": "48051002",
+  "name": "LE COLLET-SAUVEPLANE",
+  "lat": 44.25917,
+  "lon": 3.93183,
+  "elevation": 490.0,
+  "license": "Licence Ouverte (Météo-France)",
+  "dataset": "principales"
+ },
+ {
+  "id": "48060001",
+  "name": "FAU DE PEYRE",
+  "lat": 44.76317,
+  "lon": 3.21183,
+  "elevation": 1163.0,
+  "license": "Licence Ouverte (Météo-France)",
+  "dataset": "principales"
+ },
+ {
+  "id": "48061002",
+  "name": "FLORAC",
+  "lat": 44.309,
+  "lon": 3.59633,
+  "elevation": 618.0,
+  "license": "Licence Ouverte (Météo-France)",
+  "dataset": "principales"
+ },
+ {
+  "id": "48069001",
+  "name": "GATUZIERES_SAPC",
+  "lat": 44.19533,
+  "lon": 3.499,
+  "elevation": 965.0,
+  "license": "Licence Ouverte (Météo-France)",
+  "dataset": "principales"
+ },
+ {
+  "id": "48070004",
+  "name": "GRANDRIEU",
+  "lat": 44.78067,
+  "lon": 3.63383,
+  "elevation": 1163.0,
+  "license": "Licence Ouverte (Météo-France)",
+  "dataset": "principales"
+ },
+ {
+  "id": "48094001",
+  "name": "LE MASSEGROS",
+  "lat": 44.29567,
+  "lon": 3.16567,
+  "elevation": 890.0,
+  "license": "Licence Ouverte (Météo-France)",
+  "dataset": "principales"
+ },
+ {
+  "id": "48095004",
+  "name": "MENDE-VILLE",
+  "lat": 44.51683,
+  "lon": 3.48983,
+  "elevation": 710.0,
+  "license": "Licence Ouverte (Météo-France)",
+  "dataset": "principales"
+ },
+ {
+  "id": "48095005",
+  "name": "MENDE",
+  "lat": 44.53367,
+  "lon": 3.4545,
+  "elevation": 932.0,
+  "license": "Licence Ouverte (Météo-France)",
+  "dataset": "principales"
+ },
+ {
+  "id": "48103001",
+  "name": "MONTRODAT",
+  "lat": 44.54583,
+  "lon": 3.3125,
+  "elevation": 746.0,
+  "license": "Licence Ouverte (Météo-France)",
+  "dataset": "principales"
+ },
+ {
+  "id": "48108001",
+  "name": "LA PANOUSE_SAPC",
+  "lat": 44.72867,
+  "lon": 3.58933,
+  "elevation": 1260.0,
+  "license": "Licence Ouverte (Météo-France)",
+  "dataset": "principales"
+ },
+ {
+  "id": "48110001",
+  "name": "PAULHAC EN MARGERIDE_SAPC",
+  "lat": 44.94767,
+  "lon": 3.38,
+  "elevation": 1170.0,
+  "license": "Licence Ouverte (Météo-France)",
+  "dataset": "principales"
+ },
+ {
+  "id": "48116001",
+  "name": "LE PONT-DE-MONTVERT",
+  "lat": 44.36567,
+  "lon": 3.73833,
+  "elevation": 875.0,
+  "license": "Licence Ouverte (Météo-France)",
+  "dataset": "principales"
+ },
+ {
+  "id": "48130002",
+  "name": "ROUSSES_SAPC",
+  "lat": 44.20683,
+  "lon": 3.5845,
+  "elevation": 812.0,
+  "license": "Licence Ouverte (Météo-France)",
+  "dataset": "principales"
+ },
+ {
+  "id": "48146001",
+  "name": "STE ENIMIE-SAUVETERRE",
+  "lat": 44.40867,
+  "lon": 3.43817,
+  "elevation": 1018.0,
+  "license": "Licence Ouverte (Météo-France)",
+  "dataset": "principales"
+ },
+ {
+  "id": "48148004",
+  "name": "ST-ETIENNE-VALLEE-FRANCAISE",
+  "lat": 44.16583,
+  "lon": 3.85417,
+  "elevation": 518.0,
+  "license": "Licence Ouverte (Météo-France)",
+  "dataset": "principales"
+ },
+ {
+  "id": "48156002",
+  "name": "ST GERMAIN DU TEIL",
+  "lat": 44.478,
+  "lon": 3.16067,
+  "elevation": 775.0,
+  "license": "Licence Ouverte (Météo-France)",
+  "dataset": "principales"
+ },
+ {
+  "id": "48176002",
+  "name": "ST PIERRE-DES-TRIPIERS",
+  "lat": 44.2465,
+  "lon": 3.3035,
+  "elevation": 929.0,
+  "license": "Licence Ouverte (Météo-France)",
+  "dataset": "principales"
+ },
+ {
+  "id": "48186001",
+  "name": "LA SALLE PRUNET",
+  "lat": 44.31567,
+  "lon": 3.65067,
+  "elevation": 903.0,
+  "license": "Licence Ouverte (Météo-France)",
+  "dataset": "principales"
+ },
+ {
+  "id": "48187003",
+  "name": "LES SALCES-FROMENTAL",
+  "lat": 44.53267,
+  "lon": 3.15517,
+  "elevation": 1075.0,
+  "license": "Licence Ouverte (Météo-France)",
+  "dataset": "principales"
+ },
+ {
+  "id": "48198001",
+  "name": "VILLEFORT",
+  "lat": 44.44167,
+  "lon": 3.92833,
+  "elevation": 620.0,
+  "license": "Licence Ouverte (Météo-France)",
+  "dataset": "principales"
+ }
+]
