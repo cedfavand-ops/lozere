@@ -1,0 +1,27 @@
+name: Sonder l'API Datacake (une seule fois)
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      PYTHONUNBUFFERED: "1"
+      DATACAKE_TOKENS: ${{ secrets.DATACAKE_TOKENS }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Dépendances
+        run: pip install --prefer-binary requests
+
+      - name: Sonde
+        run: python datacake_probe.py
