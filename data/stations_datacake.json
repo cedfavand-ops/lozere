@@ -1,0 +1,46 @@
+[
+ {
+  "id": "DC-MALBOUZON",
+  "name": "Prinsuéjols - Malbouzon",
+  "lat": 44.70113,
+  "lon": 3.15201,
+  "elevation": 1160,
+  "device": "e8dd3621-eeee-4a60-bee4-4bc4277fa27f",
+  "field": "SHTTEMP",
+  "cold_pool": true,
+  "license": "station personnelle"
+ },
+ {
+  "id": "DC-STPAUL",
+  "name": "Saint-Paul-le-Froid",
+  "lat": 44.81033,
+  "lon": 3.56122,
+  "elevation": 1161,
+  "device": "7a3da9a9-4800-4dce-b5eb-64cf8aef1e9d",
+  "field": "SHTTEMP",
+  "cold_pool": true,
+  "license": "station personnelle"
+ },
+ {
+  "id": "DC-RANDON",
+  "name": "Châteauneuf-de-Randon (Datacake)",
+  "lat": 44.65631,
+  "lon": 3.66988,
+  "elevation": 1145,
+  "device": "24d8155b-8063-4e2f-a612-2a68e394600a",
+  "field": "SHTTEMP",
+  "cold_pool": true,
+  "license": "station personnelle"
+ },
+ {
+  "id": "DC-FRAISSE",
+  "name": "Doline du Fraisse - Mas-Saint-Chély",
+  "lat": 44.28222,
+  "lon": 3.45117,
+  "elevation": 914,
+  "device": "799a3b42-2c98-4446-b402-45ced57f3913",
+  "field": "SHTTEMP",
+  "cold_pool": true,
+  "license": "station personnelle"
+ }
+]
