@@ -263,9 +263,10 @@ def smooth_field(a, sigma=SMOOTH_SIGMA):
 
 
 def load_stations():
-    """Stations à suivre : data/stations_infoclimat.json (liste_stations.py) et data/stations_datacake.json."""
+    """Stations à suivre : data/stations_infoclimat.json, stations_meteofrance.json et stations_datacake.json."""
     stations = []
-    for fname, source in (("stations_infoclimat.json", "infoclimat"), ("stations_datacake.json", "datacake")):
+    for fname, source in (("stations_infoclimat.json", "infoclimat"), ("stations_meteofrance.json", "meteofrance"),
+                          ("stations_datacake.json", "datacake")):
         p = HERE / "data" / fname
         if p.exists():
             for st in json.loads(p.read_text(encoding="utf-8")):

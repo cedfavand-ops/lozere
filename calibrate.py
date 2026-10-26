@@ -104,7 +104,8 @@ def fit_rule(alpha, se, wind):
 # ------------------------------------------------------------------ données
 def load_stations():
     st = []
-    for fname, src in (("stations_infoclimat.json", "infoclimat"), ("stations_datacake.json", "datacake")):
+    for fname, src in (("stations_infoclimat.json", "infoclimat"), ("stations_meteofrance.json", "meteofrance"),
+                       ("stations_datacake.json", "datacake")):
         p = HERE / "data" / fname
         if p.exists():
             for s in json.loads(p.read_text(encoding="utf-8")):
@@ -240,7 +241,7 @@ def main():
     token = os.environ.get("INFOCLIMAT_TOKEN")
     if not token:
         sys.exit("INFOCLIMAT_TOKEN absent (secret du dépôt requis).")
-    stations = [s for s in load_stations() if s["source"] == "infoclimat"]
+    stations = [s for s in load_stations() if s["source"] in ("infoclimat", "meteofrance")]
     if not stations:
         sys.exit("Aucune station : lancer d'abord « Lister les stations Infoclimat ».")
     motif = station_motif(stations)
@@ -248,7 +249,13 @@ def main():
     print(f"{len(stations)} stations, {len(keep)} dans la grille du motif ; période {d0} -> {d1}")
     stations = [stations[i] for i in keep]
     motif = motif[keep]
-    series = fetch_history([s["id"] for s in stations], d0, d1, token)
+    series = fetch_history([s["id"] for s in stations if s["source"] == "infoclimat"], d0, d1, token)
+    if any(s["source"] == "meteofrance" for s in stations):
+        _, mf = obs.fetch_meteofrance(d0 - dt.timedelta(days=1), d1 + dt.timedelta(days=1))
+        for s in stations:
+            if s["source"] == "meteofrance" and s["id"] in mf:
+                series[s["id"]] = mf[s["id"]]
+        print(f"  Météo-France : {sum(1 for s in stations if s['source'] == 'meteofrance' and s['id'] in mf)} stations")
     rows = analyse(stations, series, motif, d0, d1)
     print(f"{len(rows)} nuits exploitables sur {(d1 - d0).days + 1} (au moins {MIN_STATIONS} stations)")
     if len(rows) < 15:

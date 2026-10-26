@@ -83,11 +83,12 @@ def summarize(rows):
               f"erreur absolue moyenne {m_fc:.2f} °C (ICON seul {m_ic:.2f})")
 
 
-def done_days():
+def done_pairs():
+    """Couples (jour, station) déjà vérifiés."""
     if not CSV_PATH.exists():
         return set()
     with open(CSV_PATH, newline="", encoding="utf-8") as f:
-        return {r["day"] for r in csv.DictReader(f)}
+        return {(r["day"], r["id"]) for r in csv.DictReader(f)}
 
 
 def append_rows(rows):
@@ -101,17 +102,21 @@ def append_rows(rows):
             w.writerow({k: ("" if r.get(k) is None else r[k]) for k in FIELDS})
 
 
+RETRY_DAYS = 6    # une station dont les données arrivent en retard (Météo-France : mise à jour quotidienne) est retentée
+
+
 def main():
     token = os.environ.get("INFOCLIMAT_TOKEN")
     now = dt.datetime.now(UTC)
-    done = done_days()
+    done = done_pairs()
     files = sorted(HIST.glob("forecast_*.json"))
     if not files:
         print("Aucune prévision archivée dans history/ : rien à vérifier.")
         return
     for f in files:
         rec = json.loads(f.read_text(encoding="utf-8"))
-        if rec["day"] in done:
+        pending = [st for st in rec["stations"] if (rec["day"], st["id"]) not in done]
+        if not pending:
             continue
         tn1 = parse_utc(rec["tn_window_utc"][1])
         tx1 = parse_utc(rec["tx_truncated_at_utc"] or rec["tx_window_utc"][1])
@@ -119,22 +124,32 @@ def main():
         if now < ready:
             print(f"{rec['day']} : fenêtres pas terminées (prêt après {ready:%d/%m %H:%M} UTC).")
             continue
-        ic_ids = [s["id"] for s in rec["stations"] if s["source"] == "infoclimat"]
-        dc = [s for s in rec["stations"] if s["source"] == "datacake"]
-        start = (parse_utc(rec["tn_window_utc"][0]).date() - dt.timedelta(days=1)).isoformat()
-        end = (tx1.date() + dt.timedelta(days=1)).isoformat()
+        if now > ready + dt.timedelta(days=RETRY_DAYS):
+            continue                                   # trop ancien : on n'insiste plus
+        d_start = parse_utc(rec["tn_window_utc"][0]).date() - dt.timedelta(days=1)
+        d_end = tx1.date() + dt.timedelta(days=1)
         series = {}
+        ic_ids = [s["id"] for s in pending if s["source"] == "infoclimat"]
         if ic_ids:
             if not token:
                 print(f"{rec['day']} : INFOCLIMAT_TOKEN absent, stations Infoclimat ignorées.")
             else:
-                series.update(obs.fetch_infoclimat(ic_ids, start, end, token))
-        series.update(obs.fetch_datacake(dc, start, end))
-        rows = rows_for_day(rec, series)
-        print(f"{rec['day']} : {len(rows)} stations vérifiées sur {len(rec['stations'])}")
+                series.update(obs.fetch_infoclimat(ic_ids, d_start.isoformat(), d_end.isoformat(), token))
+        if any(s["source"] == "meteofrance" for s in pending):
+            try:
+                _, mf = obs.fetch_meteofrance(d_start, d_end)
+                series.update(mf)
+            except Exception as e:
+                print(f"{rec['day']} : Météo-France indisponible ({type(e).__name__}: {e})")
+        dc = [s for s in pending if s["source"] == "datacake"]
+        series.update(obs.fetch_datacake(dc, d_start.isoformat(), d_end.isoformat()))
+        sub = dict(rec, stations=pending)
+        rows = rows_for_day(sub, series)
+        print(f"{rec['day']} : {len(rows)} stations vérifiées sur {len(pending)} en attente")
         if rows:
             summarize(rows)
             append_rows(rows)
+            done |= {(r["day"], r["id"]) for r in rows}
 
 
 if __name__ == "__main__":
