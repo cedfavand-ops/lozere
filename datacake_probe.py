@@ -36,16 +36,39 @@ def show(title, js, limit=1500):
     print(f"--- {title}\n{txt[:limit]}{' ...' if len(txt) > limit else ''}")
 
 
+def token_for(tokens, st):
+    """Jeton d'une station : clé = identifiant de l'appareil (conseillé), ou identifiant de station (DC-...)."""
+    for key in (st["device"], st["id"], st.get("name")):
+        v = tokens.get(key)
+        if isinstance(v, dict):
+            v = v.get("token")
+        if v:
+            return v
+    return None
+
+
 def main():
     raw = os.environ.get("DATACAKE_TOKENS")
     if not raw:
-        sys.exit("Secret DATACAKE_TOKENS absent.")
-    tokens = json.loads(raw)
+        sys.exit("Secret DATACAKE_TOKENS absent (ou vide).")
+    try:
+        tokens = json.loads(raw)
+        assert isinstance(tokens, dict)
+    except (ValueError, AssertionError):
+        sys.exit("Le secret DATACAKE_TOKENS n'est pas un objet JSON valide : "
+                 '{"identifiant appareil": "jeton", ...} (guillemets droits, virgules entre les paires).')
     stations = json.loads((HERE / "data" / "stations_datacake.json").read_text(encoding="utf-8"))
-    st = stations[0]
-    token = tokens.get(st["device"])
-    if not token:
-        sys.exit(f"Pas de jeton pour {st['id']} dans DATACAKE_TOKENS (clé attendue : l'identifiant de l'appareil).")
+    # Les clés du secret ne sont pas secrètes (seules les valeurs le sont) : on les affiche pour le diagnostic
+    print(f"Clés trouvées dans DATACAKE_TOKENS ({len(tokens)}) : {sorted(tokens)}")
+    print("Clés attendues (identifiant de l'appareil) :")
+    for s_ in stations:
+        print(f"  {s_['id']:14s} -> {s_['device']}   jeton trouvé : {'oui' if token_for(tokens, s_) else 'NON'}")
+    ok = [s_ for s_ in stations if token_for(tokens, s_)]
+    if not ok:
+        sys.exit("Aucune station n'a de jeton : les clés du secret doivent être les identifiants d'appareil ci-dessus.")
+    st = ok[0]
+    token = token_for(tokens, st)
+    print(f"Station sondée : {st['id']} ({st['name']})")
     dev, field = st["device"], st["field"]
     print(f"Station sondée : {st['id']} ({st['name']}) ; jetons disponibles pour {len(tokens)} appareil(s)")
 
