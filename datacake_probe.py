@@ -33,8 +33,14 @@ def clean(tok):
 
 
 def shape(tok):
+    cls = []
+    if re.search(r"[a-z]", tok): cls.append("minuscules")
+    if re.search(r"[A-Z]", tok): cls.append("majuscules")
+    if re.search(r"\d", tok): cls.append("chiffres")
+    sym = sorted(set(re.findall(r"[^A-Za-z0-9]", tok)))
     return (f"longueur {len(tok)}, hexadécimal : {'oui' if re.fullmatch(r'[0-9a-fA-F]+', tok) else 'non'}, "
-            f"espace ou retour à la ligne : {'oui' if re.search(r'\s', tok) else 'non'}")
+            f"contient {'+'.join(cls) or 'rien'}, symboles : {''.join(sym) or 'aucun'}, "
+            f"points : {tok.count('.')}, commence par « eyJ » (jeton JWT) : {'oui' if tok.startswith('eyJ') else 'non'}")
 
 
 def post(token, query, scheme="Token"):
@@ -51,6 +57,28 @@ def post(token, query, scheme="Token"):
 def show(title, js, limit=1500):
     txt = json.dumps(js, ensure_ascii=False)
     print(f"--- {title}\n{txt[:limit]}{' ...' if len(txt) > limit else ''}")
+
+
+def discover(st, token):
+    """Cherche une API REST : affiche seulement les codes HTTP (404 = chemin inexistant, 401/403 = chemin existant)."""
+    base = "https://api.datacake.co"
+    dev = st["device"]
+    paths = ["/", "/rest/", "/rest/v1/", "/v1/", "/api/", "/api/v1/", "/openapi.json", "/rest/openapi.json",
+             "/api/schema/", f"/rest/v1/devices/{dev}/", f"/v1/devices/{dev}/", f"/api/v1/devices/{dev}/",
+             f"/rest/devices/{dev}/", f"/devices/{dev}/"]
+    print("--- exploration de api.datacake.co (aucun jeton affiché)")
+    for path in paths:
+        row = []
+        for sch in ("sans jeton", "Token", "Bearer"):
+            hdr = {} if sch == "sans jeton" else {"Authorization": f"{sch} {token}"}
+            try:
+                r = requests.get(base + path, headers=hdr, timeout=30)
+                row.append(f"{sch}: {r.status_code}")
+                if r.status_code == 200 and sch == "sans jeton":
+                    print(f"    corps de {path} : {r.text[:200]!r}")
+            except requests.RequestException as e:
+                row.append(f"{sch}: erreur {type(e).__name__}")
+        print(f"  GET {path.replace(dev, '<appareil>'):42s} " + " | ".join(row))
 
 
 def token_for(st, single, tokens):
@@ -94,14 +122,17 @@ def main():
     for sch in ("Token", "Bearer", "Brut"):
         code, js = post(token, "query { __typename }", sch)
         code2, js2 = post(token, "query { user { id } }", sch)
-        print(f"--- authentification « {sch} » : requête simple HTTP {code} ; "
-              f"utilisateur reconnu : {bool((js2.get('data') or {}).get('user'))} (HTTP {code2})")
-        if code == 200 and scheme is None:
+        user_ok = bool((js2.get("data") or {}).get("user"))
+        print(f"--- authentification « {sch} » : requête simple HTTP {code} ; utilisateur reconnu : {user_ok} (HTTP {code2})")
+        if code == 200 and not user_ok:
+            print("    (HTTP 200 sans utilisateur reconnu = accès ANONYME, pas une authentification réussie)")
+        if code == 200 and user_ok and scheme is None:
             scheme = sch
     if scheme is None:
-        print("Aucune façon d'envoyer le jeton n'est acceptée (HTTP 401 partout) : le jeton n'est pas reconnu par\n"
-              "cette API. Vérifiez qu'il correspond bien à l'espace de travail de la station, et copiez-moi le code\n"
-              "(avec les secrets remplacés par XXX) qui lit vos stations dans votre autre projet.")
+        print("Aucune façon d'envoyer le jeton n'authentifie un utilisateur sur l'API GraphQL.\n"
+              "Ce jeton est peut-être celui d'une autre API (REST) : exploration ci-dessous.")
+        discover(st, token)
+        print("Copiez-moi aussi le code (secrets remplacés par XXX) qui lit vos stations dans votre autre projet.")
         sys.exit(1)
     print(f"Façon retenue : {scheme}")
 
@@ -120,10 +151,9 @@ def main():
     t0 = (now - dt.timedelta(hours=24)).strftime("%Y-%m-%dT%H:%M:%SZ")
     t1 = now.strftime("%Y-%m-%dT%H:%M:%SZ")
     variants = {
-        "timerange 1d, raw": f'history(fields: ["{field}"], timerange: "1d", resolution: "raw")',
-        "timerange 1d, 1h": f'history(fields: ["{field}"], timerange: "1d", resolution: "1h")',
-        "début/fin, raw": f'history(fields: ["{field}"], timerangeStart: "{t0}", timerangeEnd: "{t1}", resolution: "raw")',
-        "début/fin, 1h": f'history(fields: ["{field}"], timerangeStart: "{t0}", timerangeEnd: "{t1}", resolution: "1h")',
+        "timerangestart/end, raw": f'history(fields: ["{field}"], timerangestart: "{t0}", timerangeend: "{t1}", resolution: "raw")',
+        "timerangestart/end, 1h": f'history(fields: ["{field}"], timerangestart: "{t0}", timerangeend: "{t1}", resolution: "1h")',
+        "timerangestart/end sans résolution": f'history(fields: ["{field}"], timerangestart: "{t0}", timerangeend: "{t1}")',
     }
     for name, h in variants.items():
         code, js = post(token, f'query {{ device(deviceId: "{dev}") {{ {h} }} }}', scheme)
