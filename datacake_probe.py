@@ -26,10 +26,15 @@ URL = "https://api.datacake.co/graphql/"
 
 
 def clean(tok):
+    """Retire espaces, guillemets, chevrons < > (restes d'un modèle de saisie) et un éventuel préfixe « Token »."""
     t = str(tok).strip().strip("\"'").strip()
     if t.lower().startswith("token "):
-        t = t[6:].strip()
-    return t
+        t = t[6:]
+    return re.sub(r"[\s<>\"']", "", t)
+
+
+def had_junk(raw, cleaned):
+    return str(raw).strip() != cleaned
 
 
 def shape(tok):
@@ -81,6 +86,26 @@ def discover(st, token):
         print(f"  GET {path.replace(dev, '<appareil>'):42s} " + " | ".join(row))
 
 
+def rest_probe(st, token):
+    """API REST v1 (https://api.datacake.co/v1/) : statuts et début des réponses, sans afficher le jeton."""
+    base = "https://api.datacake.co/v1"
+    dev, field = st["device"], st["field"]
+    now = dt.datetime.now(dt.timezone.utc)
+    t0 = (now - dt.timedelta(hours=24)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    cands = [f"/devices/{dev}/", f"/devices/{dev}/measurements/", f"/devices/{dev}/history/",
+             f"/devices/{dev}/fields/", f"/devices/{dev}/measurements/?field={field}&start={t0}"]
+    print("--- API REST v1")
+    for path in cands:
+        try:
+            r = requests.get(base + path, headers={"Authorization": f"Token {token}"}, timeout=60)
+        except requests.RequestException as e:
+            print(f"  GET {path.replace(dev, '<appareil>')[:60]:60s} erreur {type(e).__name__}")
+            continue
+        print(f"  GET {path.replace(dev, '<appareil>')[:60]:60s} HTTP {r.status_code}")
+        if r.status_code == 200:
+            print(f"      {r.text[:700]!r}")
+
+
 def token_for(st, single, tokens):
     if single:
         return clean(single)
@@ -110,6 +135,9 @@ def main():
     for s in stations:
         t = token_for(s, single, tokens)
         print(f"  {s['id']:14s} : {'absent' if not t else shape(t)}")
+        raw = None if single else next((tokens.get(k) for k in (s['device'], s['id'], s.get('name')) if tokens.get(k)), None)
+        if t and raw is not None and had_junk(raw if isinstance(raw, str) else raw.get('token', ''), t):
+            print("                   -> caractères superflus retirés avant l'envoi (chevrons, espaces, guillemets ou préfixe)")
         if t:
             usable.append((s, t))
     if not usable:
@@ -117,6 +145,8 @@ def main():
     st, token = usable[0]
     dev, field, ws = st["device"], st["field"], st.get("workspace") or ""
     print(f"Station sondée : {st['id']} ({st['name']}) ; espace de travail connu : {'oui' if ws else 'non'}")
+
+    rest_probe(st, token)
 
     scheme = None
     for sch in ("Token", "Bearer", "Brut"):
