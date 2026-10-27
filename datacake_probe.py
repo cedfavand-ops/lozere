@@ -1,17 +1,21 @@
 #!/usr/bin/env python3
 """
-Sonde de l'API Datacake (GraphQL) : à lancer UNE fois pour fixer la requête d'historique.
+Sonde de l'API Datacake (GraphQL) : à lancer pour fixer la façon de LIRE l'historique.
 
-Les jetons ne sont jamais dans le code : secret GitHub DATACAKE_TOKENS, un objet JSON
-    {"<identifiant de l'appareil>": "<jeton>", ...}
-Ce script n'affiche JAMAIS un jeton ; il affiche le schéma de l'API et un extrait de la réponse
-d'une requête d'historique des 24 dernières heures, pour la première station.
+Secrets GitHub (jamais affichés) :
+  DATACAKE_TOKENS : objet JSON {"<identifiant appareil>": "<jeton de l'espace de travail>", ...}
+  (repli : DATACAKE_TOKEN, un jeton unique)
 
-Lancement : workflow GitHub « Sonder l'API Datacake ».
+Le script :
+  1. nettoie le jeton (espaces, guillemets, préfixe « Token ») et n'affiche que sa FORME (longueur, hexadécimal) ;
+  2. teste trois façons d'envoyer le jeton (Token, Bearer, brut) et affiche le code HTTP de chacune ;
+  3. avec la première qui est acceptée, essaie : liste des appareils de l'espace de travail, mesures actuelles,
+     schéma des requêtes d'historique, puis quatre formes de requête d'historique sur 24 h.
 """
 import datetime as dt
 import json
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -21,9 +25,22 @@ HERE = Path(__file__).resolve().parent
 URL = "https://api.datacake.co/graphql/"
 
 
-def gql(token, query):
-    r = requests.post(URL, json={"query": query}, headers={"Authorization": f"Token {token}",
-                                                          "Content-Type": "application/json"}, timeout=120)
+def clean(tok):
+    t = str(tok).strip().strip("\"'").strip()
+    if t.lower().startswith("token "):
+        t = t[6:].strip()
+    return t
+
+
+def shape(tok):
+    return (f"longueur {len(tok)}, hexadécimal : {'oui' if re.fullmatch(r'[0-9a-fA-F]+', tok) else 'non'}, "
+            f"espace ou retour à la ligne : {'oui' if re.search(r'\s', tok) else 'non'}")
+
+
+def post(token, query, scheme="Token"):
+    auth = {"Token": f"Token {token}", "Bearer": f"Bearer {token}", "Brut": token}[scheme]
+    r = requests.post(URL, json={"query": query}, headers={"Authorization": auth, "Content-Type": "application/json"},
+                      timeout=120)
     try:
         js = r.json()
     except ValueError:
@@ -36,50 +53,65 @@ def show(title, js, limit=1500):
     print(f"--- {title}\n{txt[:limit]}{' ...' if len(txt) > limit else ''}")
 
 
-def token_for(tokens, st):
-    """Jeton d'une station : clé = identifiant de l'appareil (conseillé), ou identifiant de station (DC-...)."""
+def token_for(st, single, tokens):
+    if single:
+        return clean(single)
     for key in (st["device"], st["id"], st.get("name")):
         v = tokens.get(key)
         if isinstance(v, dict):
             v = v.get("token")
         if v:
-            return v
+            return clean(v)
     return None
 
 
 def main():
-    raw = os.environ.get("DATACAKE_TOKENS")
-    if not raw:
-        sys.exit("Secret DATACAKE_TOKENS absent (ou vide).")
-    try:
-        tokens = json.loads(raw)
-        assert isinstance(tokens, dict)
-    except (ValueError, AssertionError):
-        sys.exit("Le secret DATACAKE_TOKENS n'est pas un objet JSON valide : "
-                 '{"identifiant appareil": "jeton", ...} (guillemets droits, virgules entre les paires).')
+    single = (os.environ.get("DATACAKE_TOKEN") or "").strip() or None
+    tokens = {}
+    if os.environ.get("DATACAKE_TOKENS"):
+        try:
+            tokens = json.loads(os.environ["DATACAKE_TOKENS"])
+            assert isinstance(tokens, dict)
+        except (ValueError, AssertionError):
+            sys.exit("Le secret DATACAKE_TOKENS n'est pas un objet JSON valide.")
+    if not single and not tokens:
+        sys.exit("Aucun secret DATACAKE_TOKENS / DATACAKE_TOKEN.")
     stations = json.loads((HERE / "data" / "stations_datacake.json").read_text(encoding="utf-8"))
-    # Les clés du secret ne sont pas secrètes (seules les valeurs le sont) : on les affiche pour le diagnostic
-    print(f"Clés trouvées dans DATACAKE_TOKENS ({len(tokens)}) : {sorted(tokens)}")
-    print("Clés attendues (identifiant de l'appareil) :")
-    for s_ in stations:
-        print(f"  {s_['id']:14s} -> {s_['device']}   jeton trouvé : {'oui' if token_for(tokens, s_) else 'NON'}")
-    ok = [s_ for s_ in stations if token_for(tokens, s_)]
-    if not ok:
-        sys.exit("Aucune station n'a de jeton : les clés du secret doivent être les identifiants d'appareil ci-dessus.")
-    st = ok[0]
-    token = token_for(tokens, st)
-    print(f"Station sondée : {st['id']} ({st['name']})")
-    dev, field = st["device"], st["field"]
-    print(f"Station sondée : {st['id']} ({st['name']}) ; jetons disponibles pour {len(tokens)} appareil(s)")
+    print("Forme des jetons (la valeur n'est jamais affichée) :")
+    usable = []
+    for s in stations:
+        t = token_for(s, single, tokens)
+        print(f"  {s['id']:14s} : {'absent' if not t else shape(t)}")
+        if t:
+            usable.append((s, t))
+    if not usable:
+        sys.exit("Aucune station n'a de jeton.")
+    st, token = usable[0]
+    dev, field, ws = st["device"], st["field"], st.get("workspace") or ""
+    print(f"Station sondée : {st['id']} ({st['name']}) ; espace de travail connu : {'oui' if ws else 'non'}")
 
-    code, js = gql(token, "query { user { email } }")
-    print(f"--- authentification : HTTP {code} ; utilisateur reconnu : {bool((js.get('data') or {}).get('user'))}")
+    scheme = None
+    for sch in ("Token", "Bearer", "Brut"):
+        code, js = post(token, "query { __typename }", sch)
+        code2, js2 = post(token, "query { user { id } }", sch)
+        print(f"--- authentification « {sch} » : requête simple HTTP {code} ; "
+              f"utilisateur reconnu : {bool((js2.get('data') or {}).get('user'))} (HTTP {code2})")
+        if code == 200 and scheme is None:
+            scheme = sch
+    if scheme is None:
+        print("Aucune façon d'envoyer le jeton n'est acceptée (HTTP 401 partout) : le jeton n'est pas reconnu par\n"
+              "cette API. Vérifiez qu'il correspond bien à l'espace de travail de la station, et copiez-moi le code\n"
+              "(avec les secrets remplacés par XXX) qui lit vos stations dans votre autre projet.")
+        sys.exit(1)
+    print(f"Façon retenue : {scheme}")
 
-    code, js = gql(token, f'query {{ device(deviceId: "{dev}") {{ id verboseName online '
-                          f'currentMeasurements(allActiveFields: true) {{ field {{ fieldName }} value }} }} }}')
+    if ws:
+        code, js = post(token, f'query {{ allDevices(inWorkspace: "{ws}") {{ id serialNumber verboseName }} }}', scheme)
+        show(f"appareils de l'espace de travail (HTTP {code})", js)
+    code, js = post(token, f'query {{ device(deviceId: "{dev}") {{ id verboseName online '
+                           f'currentMeasurements(allActiveFields: true) {{ field {{ fieldName }} value }} }} }}', scheme)
     show(f"appareil et mesures actuelles (HTTP {code})", js)
-
-    code, js = gql(token, '{ __type(name: "DeviceType") { fields { name args { name type { name kind ofType { name kind } } } } } }')
+    code, js = post(token, '{ __type(name: "DeviceType") { fields { name args { name type { name kind ofType { name kind } } } } } }', scheme)
     fields = (((js.get("data") or {}).get("__type") or {}).get("fields")) or []
     hist = [f for f in fields if "hist" in f["name"].lower() or "measure" in f["name"].lower()]
     show("champs d'historique du type DeviceType (introspection)", hist if hist else js, 3000)
@@ -94,10 +126,10 @@ def main():
         "début/fin, 1h": f'history(fields: ["{field}"], timerangeStart: "{t0}", timerangeEnd: "{t1}", resolution: "1h")',
     }
     for name, h in variants.items():
-        code, js = gql(token, f'query {{ device(deviceId: "{dev}") {{ {h} }} }}')
-        ok = bool((js.get("data") or {}).get("device")) and not js.get("errors")
-        show(f"historique, variante « {name} » : {'OK' if ok else 'ÉCHEC'} (HTTP {code})", js, 1200)
-        if ok:
+        code, js = post(token, f'query {{ device(deviceId: "{dev}") {{ {h} }} }}', scheme)
+        good = bool((js.get("data") or {}).get("device")) and not js.get("errors")
+        show(f"historique, variante « {name} » : {'OK' if good else 'ÉCHEC'} (HTTP {code})", js, 1200)
+        if good:
             break
 
 
