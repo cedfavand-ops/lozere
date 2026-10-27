@@ -9,7 +9,8 @@
   "field": "SHTTEMP",
   "cold_pool": true,
   "license": "station personnelle",
-  "workspace": "9842a6a0-6136-4c1d-9f5f-f0cf654c0381"
+  "workspace": "9842a6a0-6136-4c1d-9f5f-f0cf654c0381",
+  "series": "all"
  },
  {
   "id": "DC-STPAUL",
@@ -21,7 +22,8 @@
   "field": "SHTTEMP",
   "cold_pool": true,
   "license": "station personnelle",
-  "workspace": ""
+  "workspace": "6284931f-2418-45ba-9070-4b180c145296",
+  "series": "all"
  },
  {
   "id": "DC-RANDON",
@@ -33,7 +35,8 @@
   "field": "SHTTEMP",
   "cold_pool": true,
   "license": "station personnelle",
-  "workspace": ""
+  "workspace": "4b497203-9386-46db-942a-641bac439369",
+  "series": "all"
  },
  {
   "id": "DC-FRAISSE",
@@ -45,6 +48,7 @@
   "field": "SHTTEMP",
   "cold_pool": true,
   "license": "station personnelle",
-  "workspace": ""
+  "workspace": "4261387d-0555-4c57-b3c0-c1c1b7d38871",
+  "series": "all"
  }
 ]
