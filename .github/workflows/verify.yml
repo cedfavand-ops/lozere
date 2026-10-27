@@ -16,6 +16,7 @@ jobs:
     env:
       PYTHONUNBUFFERED: "1"
       INFOCLIMAT_TOKEN: ${{ secrets.INFOCLIMAT_TOKEN }}
+      DATACAKE_TOKENS: ${{ secrets.DATACAKE_TOKENS }}
     steps:
       - uses: actions/checkout@v4
 

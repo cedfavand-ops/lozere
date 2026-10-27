@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       start:
-        description: "Première nuit (AAAA-MM-JJ) ; vide = 5 jours avant hier"
+        description: "Première nuit (AAAA-MM-JJ) ; vide = 150 jours avant hier"
         required: false
       end:
         description: "Dernière nuit (AAAA-MM-JJ) ; vide = hier"
@@ -20,6 +20,7 @@ jobs:
     env:
       PYTHONUNBUFFERED: "1"
       INFOCLIMAT_TOKEN: ${{ secrets.INFOCLIMAT_TOKEN }}
+      DATACAKE_TOKENS: ${{ secrets.DATACAKE_TOKENS }}
     steps:
       - uses: actions/checkout@v4
 
