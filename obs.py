@@ -15,8 +15,11 @@ import csv
 import datetime as dt
 import gzip
 import io
+import json
+import os
 import re
 import time
+from pathlib import Path
 
 import requests
 
@@ -181,15 +184,96 @@ def fetch_meteofrance(d0, d1, dept="48", datasets=("principales", "complementair
     return stations, series
 
 
-def fetch_datacake(stations_cfg, start, end):
+DATACAKE_URL = "https://api.datacake.co/graphql/"
+
+
+def _clean_token(tok):
+    """Retire espaces, guillemets, chevrons < > et préfixe « Token » éventuels."""
+    t = str(tok).strip().strip("\"'").strip()
+    if t.lower().startswith("token "):
+        t = t[6:]
+    return re.sub(r"[\s<>\"']", "", t)
+
+
+def parse_datacake_history(raw, field, series="all"):
     """
-    À BRANCHER : récupération des 4 stations Datacake (sous abri, normes OMM).
-    Doit renvoyer {id_station: [ {t (UTC, aware), temp (°C), wind_ms, ...} ]}, comme fetch_infoclimat.
-    Tant que ce n'est pas écrit, les stations Datacake sont ignorées (message dans le journal).
+    Réponse de l'historique GraphQL (chaîne JSON ou liste de {"time": ..., CHAMP: valeur}) -> observations.
+    series : "all" ; "uplink" = relevés à seconde non nulle ; "grid" = relevés à seconde nulle
+    (l'historique de certaines stations mêle deux séries de relevés d'un même champ).
     """
-    if stations_cfg:
-        print("Datacake : connecteur non encore écrit, stations ignorées.")
-    return {}
+    rows = json.loads(raw) if isinstance(raw, str) else (raw or [])
+    out = []
+    for r in rows:
+        v = r.get(field)
+        if v is None:
+            continue
+        try:
+            t = dt.datetime.fromisoformat(str(r["time"]).replace("Z", "+00:00")).astimezone(UTC)
+            v = float(v)
+        except (KeyError, ValueError, TypeError):
+            continue
+        if series == "uplink" and t.second == 0:
+            continue
+        if series == "grid" and t.second != 0:
+            continue
+        out.append({"t": t, "temp": v, "wind_ms": None})
+    return out
+
+
+def fetch_datacake(stations_cfg, start, end, chunk_hours=48, pause=0.3):
+    """
+    Historique brut (environ 5 min) des stations Datacake, par tranches de 48 h.
+    stations_cfg : liste de dicts avec au moins 'id' ; appareil, champ et série viennent de data/stations_datacake.json.
+    start, end : 'AAAA-MM-JJ' (jours UTC, end inclus). Jetons : secret DATACAKE_TOKENS {identifiant appareil: jeton}
+    (ou DATACAKE_TOKEN unique) ; en-tête « Authorization: Token ... ».
+    Renvoie {id_station: [observations]}.
+    """
+    if not stations_cfg:
+        return {}
+    cfg_path = Path(__file__).resolve().parent / "data" / "stations_datacake.json"
+    cfg = {c["id"]: c for c in json.loads(cfg_path.read_text(encoding="utf-8"))} if cfg_path.exists() else {}
+    tokens = {}
+    if os.environ.get("DATACAKE_TOKENS"):
+        tokens = json.loads(os.environ["DATACAKE_TOKENS"])
+    single = (os.environ.get("DATACAKE_TOKEN") or "").strip()
+    t_start = dt.datetime.fromisoformat(start).replace(tzinfo=UTC)
+    t_end = min(dt.datetime.fromisoformat(end).replace(tzinfo=UTC) + dt.timedelta(days=1), dt.datetime.now(UTC))
+    out = {}
+    for st in stations_cfg:
+        c = cfg.get(st["id"])
+        if not c:
+            print(f"Datacake : station {st['id']} absente de data/stations_datacake.json, ignorée.")
+            continue
+        raw = single or next((tokens.get(k) for k in (c["device"], c["id"]) if tokens.get(k)), None)
+        if not raw:
+            print(f"Datacake : pas de jeton pour {c['id']}, ignorée.")
+            continue
+        token = _clean_token(raw if isinstance(raw, str) else raw.get("token", ""))
+        rows = []
+        a = t_start
+        while a < t_end:
+            b = min(a + dt.timedelta(hours=chunk_hours), t_end)
+            q = (f'query {{ device(deviceId: "{c["device"]}") {{ history(fields: ["{c["field"]}"], '
+                 f'timerangestart: "{a:%Y-%m-%dT%H:%M:%SZ}", timerangeend: "{b:%Y-%m-%dT%H:%M:%SZ}", resolution: "raw") }} }}')
+            r = requests.post(DATACAKE_URL, json={"query": q},
+                              headers={"Authorization": f"Token {token}", "Content-Type": "application/json"},
+                              timeout=120)
+            try:
+                js = r.json()
+            except ValueError:
+                raise RuntimeError(f"Datacake {c['id']} : HTTP {r.status_code}, réponse non JSON")
+            if js.get("errors"):
+                raise RuntimeError(f"Datacake {c['id']} : {[e.get('message') for e in js['errors']][:2]}")
+            dev = (js.get("data") or {}).get("device")
+            if dev is None:
+                raise RuntimeError(f"Datacake {c['id']} : appareil introuvable ou non autorisé (HTTP {r.status_code})")
+            if dev.get("history"):
+                rows += parse_datacake_history(dev["history"], c["field"], c.get("series", "all"))
+            a = b
+            time.sleep(pause)
+        out[c["id"]] = dedupe(rows)
+        print(f"  Datacake {c['id']} : {len(out[c['id']])} relevés")
+    return out
 
 
 def window_extreme(series, t0, t1, kind, min_cov=0.8):
