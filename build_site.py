@@ -218,18 +218,36 @@ def color_scale(arr):
     return (vmin, vmax) if vmax > vmin else (vmin, vmin + 1.0)
 
 
-def colorize(arr, vmin, vmax, cmap_name="turbo"):
+def get_cmap(name):
+    """
+    « lozere » : du plus froid au plus chaud, rose -> mauve -> bleu foncé -> bleu -> cyan -> vert -> jaune
+    -> orange -> rouge -> rouge sombre (la fin est la palette « turbo »). Tout autre nom : palette matplotlib.
+    """
     from matplotlib import colormaps
+    if name != "lozere":
+        return colormaps[name]
+    from matplotlib.colors import LinearSegmentedColormap, to_hex
+    turbo = colormaps["turbo"]
+    cold = [(0.00, "#ffc2e9"),    # rose clair : température la plus froide
+            (0.05, "#ff6fcf"),    # rose vif
+            (0.10, "#c34fe0"),    # mauve
+            (0.15, "#7a37d4")]    # violet
+    n = 16
+    warm = [(0.20 + 0.80 * i / n, to_hex(turbo(0.06 + 0.94 * i / n))) for i in range(n + 1)]   # turbo : bleu foncé -> rouge sombre
+    return LinearSegmentedColormap.from_list("lozere", cold + warm, N=512)
+
+
+def colorize(arr, vmin, vmax, cmap_name="lozere"):
     from PIL import Image
     norm = np.clip((np.nan_to_num(arr, nan=vmin) - vmin) / (vmax - vmin), 0, 1)
-    rgba = (colormaps[cmap_name](norm) * 255).astype("uint8")
+    rgba = (get_cmap(cmap_name)(norm) * 255).astype("uint8")
     rgba[..., 3] = np.where(np.isnan(arr), 0, 255)       # transparent hors Lozère
     return Image.fromarray(rgba, "RGBA")
 
 
-def palette_hex(cmap_name, n=9):
-    from matplotlib import colormaps, colors
-    cm = colormaps[cmap_name]
+def palette_hex(cmap_name, n=17):
+    from matplotlib import colors
+    cm = get_cmap(cmap_name)
     return [colors.to_hex(cm(i / (n - 1))) for i in range(n)]
 
 
@@ -320,7 +338,7 @@ def record_history(tn, tx, tn_pre, tx_pre, layers, transform, to_l93, run_utc, w
     print(f"Historique : prévision aux {len(rows)} stations enregistrée dans {path.name}")
 
 
-def build_site(lat, lon, tn_pts, tx_pts, run_utc, win_info, geojson, out_dir, cmap="turbo", ctx=None):
+def build_site(lat, lon, tn_pts, tx_pts, run_utc, win_info, geojson, out_dir, cmap="lozere", ctx=None):
     from pyproj import Transformer
     from rasterio.features import geometry_mask
     from rasterio.warp import transform_bounds
@@ -433,7 +451,7 @@ def main():
     ap.add_argument("--wait-minutes", type=int, default=30,
                     help="attente maximale du run 12Z avant repli sur le 9Z")
     ap.add_argument("--no-fallback", action="store_true", help="n'utiliser que le run demandé (pas de repli 9Z)")
-    ap.add_argument("--cmap", default="turbo")
+    ap.add_argument("--cmap", default="lozere")
     ap.add_argument("--no-history", action="store_true", help="ne pas enregistrer la prévision aux stations")
     ap.add_argument("--force-alpha", type=float, default=None,
                     help="DÉMO : impose l'indice d'inversion (0 à 1) au lieu de la règle météo")
