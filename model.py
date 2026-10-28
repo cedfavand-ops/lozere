@@ -1,25 +1,29 @@
 """
-Modèle de correction 150 m (version 1, règle a priori).
+Modèle de correction 150 m (version 2 : correction FORTE en conditions radiatives).
 
-  Tn(x) = Tn_ICON(x) + (1 - a(x)) * G * dz(x) + a(x) * motif(x)
+  Tn(x) = Tn_ICON(x) + (1 - a(x)) * G * dz(x)  +  a(x) * [ b + gain_neg * min(motif(x), 0) + GAIN_POS * max(motif(x), 0) ]
   Tx(x) = Tx_ICON(x) + G_jour * dz(x)
 
-  dz(x)    = altitude du MNT à 150 m - altitude du relief tel que le voit ICON
-  G        = gradient vertical standard (-6,5 °C/km) : la correction d'altitude "normale"
-  motif(x) = structure fine de la thermographie ECOSTRESS du 18/04/2026 (voir prepare_motif.py)
-  a(x)     = indice d'inversion entre 0 (aucune) et 1 (nuit radiative idéale), calculé à partir d'ICON.
+  a(x)      indice de conditions radiatives (ciel clair, vent faible), de 0 à 1, calculé avec ICON ;
+  motif(x)  structure fine de la thermographie ECOSTRESS (froid dans les cuvettes, doux sur les reliefs) ;
+  gain_neg  AMPLIFICATION du froid des cuvettes : ICON surestime fortement les minima dans les cuvettes à froid,
+            parfois de 5 à 10 °C, alors que le motif brut ne dépasse guère -3 °C. Valeur de départ 3 (un motif de
+            -2,5 °C devient -7,5 °C), puis ajustée chaque jour sur les stations (update_state.py) ;
+  b         biais général d'ICON en conditions radiatives, ajusté de la même façon (0 au départ) ;
+  dz(x)     écart entre le MNT à 150 m et le relief vu par ICON ; G = -6,5 °C/km (correction d'altitude classique,
+            appliquée surtout quand les conditions ne sont pas radiatives).
 
-Pourquoi ce mélange : sur la nuit de la thermographie, la structure fine ne suit PAS le gradient
-d'altitude normal (pente mesurée : +2 °C/km environ, R² 0,02). Quand la nuit est radiative (a proche de 1),
-on applique donc le motif observé ; quand le vent ou les nuages brassent l'air (a proche de 0),
-on revient à une correction d'altitude classique.
+Les stations Datacake (cuvettes à froid) sont toutes dans la queue froide du motif (de -2,1 à -2,9 °C en avril,
+jusqu'à -5,8 °C en juin) : le motif désigne bien ces lieux ; c'est son amplitude qu'il fallait multiplier.
 
-RÈGLE A PRIORI pour a (non calibrée sur des observations : à affiner) :
-  a = f_vent * f_nuages, calculés sur les heures de nuit qui précèdent le minimum
-  f_vent   = 1 si vent à 10 m <= 2 m/s ; 0 si >= 5 m/s ; progressif entre les deux
-  f_nuages = 1 si nébulosité <= 20 % ; 0 si >= 80 % ; progressif entre les deux
+RÈGLE A PRIORI de a (ajustable avec calibrate.py) :
+  a = f_vent * f_nuages sur les heures de nuit
+  f_vent   = 1 si vent à 10 m <= 3 m/s ; 0 si >= 6 m/s (dans une cuvette l'air reste calme bien au-delà du vent d'ICON)
+  f_nuages = 1 si nébulosité <= 30 % ; 0 si >= 70 %
 """
 import datetime as dt
+import json
+from pathlib import Path
 from zoneinfo import ZoneInfo
 
 import numpy as np
@@ -29,8 +33,15 @@ G_NUIT = -6.5e-3      # °C par mètre
 G_JOUR = -6.5e-3
 MAX_DZ = 600.0        # écart d'altitude maximal pris en compte (m)
 
-WIND_FULL, WIND_ZERO = 2.0, 5.0         # m/s
-CLOUD_FULL, CLOUD_ZERO = 0.20, 0.80     # fraction de ciel couvert
+WIND_FULL, WIND_ZERO = 3.0, 6.0         # m/s
+CLOUD_FULL, CLOUD_ZERO = 0.30, 0.70     # fraction de ciel couvert
+
+GAIN_NEG_PRIOR = 3.0                    # amplification du motif froid, valeur de départ
+GAIN_POS = 0.7                          # motif doux (reliefs) : peu amplifié
+BIAS_PRIOR = 0.0
+GAIN_BOUNDS = (1.0, 5.0)
+BIAS_BOUNDS = (-4.0, 2.0)
+STATE_NAME = "correction_state.json"
 
 
 def smoothstep(x):
@@ -83,9 +94,35 @@ def hsurf_ok(z_icon, dem):
     return (r > 0.9 and mad < 200.0), r, mad
 
 
-def apply_correction(tn, tx, dem, z_icon, alpha, motif):
+def default_state():
+    return {"gain_neg": GAIN_NEG_PRIOR, "bias": BIAS_PRIOR, "n_updates": 0, "days_done": [], "log": []}
+
+
+def load_state(path):
+    """État de la correction (gain et biais ajustés sur les stations) ; valeurs de départ si le fichier n'existe pas."""
+    st = default_state()
+    try:
+        saved = json.loads(Path(path).read_text(encoding="utf-8"))
+        for k in st:
+            if k in saved:
+                st[k] = saved[k]
+    except (OSError, ValueError):
+        pass
+    st["gain_neg"] = float(np.clip(st["gain_neg"], *GAIN_BOUNDS))
+    st["bias"] = float(np.clip(st["bias"], *BIAS_BOUNDS))
+    return st
+
+
+def radiative_term(alpha, motif, state):
+    """Correction de Tn due aux conditions radiatives : a * (biais + gain_neg * motif froid + GAIN_POS * motif doux)."""
+    a = np.clip(alpha, 0.0, 1.0)
+    return a * (state["bias"] + state["gain_neg"] * np.minimum(motif, 0.0) + GAIN_POS * np.maximum(motif, 0.0))
+
+
+def apply_correction(tn, tx, dem, z_icon, alpha, motif, state=None):
+    state = state or default_state()
     dz = np.clip(dem - z_icon, -MAX_DZ, MAX_DZ)
     a = np.clip(alpha, 0.0, 1.0)
-    tn2 = tn + (1.0 - a) * G_NUIT * dz + a * motif
+    tn2 = tn + (1.0 - a) * G_NUIT * dz + radiative_term(alpha, motif, state)
     tx2 = tx + G_JOUR * dz
     return tn2.astype("float32"), tx2.astype("float32")

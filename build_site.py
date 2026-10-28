@@ -165,8 +165,12 @@ def apply_model(tn, tx, X, Y, ctx):
         alpha = np.full_like(alpha, float(forced))
         print(f"DÉMONSTRATION : indice d'inversion forcé à {float(forced):.2f} (ce n'est PAS la prévision réelle).")
 
-    tn2, tx2 = model.apply_correction(tn, tx, dem, z_icon, alpha, motif)
-    ctx["layers"] = {"alpha": alpha, "motif": motif, "dz": np.clip(dem - z_icon, -model.MAX_DZ, model.MAX_DZ)}
+    state = model.load_state(HERE / "history" / model.STATE_NAME)
+    print(f"Correction radiative : gain sur le motif froid x{state['gain_neg']:.2f}, biais {state['bias']:+.2f} °C "
+          f"({state['n_updates']} ajustements sur les stations)")
+    tn2, tx2 = model.apply_correction(tn, tx, dem, z_icon, alpha, motif, state)
+    ctx["layers"] = {"alpha": alpha, "motif": motif, "dz": np.clip(dem - z_icon, -model.MAX_DZ, model.MAX_DZ),
+                     "term": model.radiative_term(alpha, motif, state)}
     d_tn, d_tx = (tn2 - tn)[inside], (tx2 - tx)[inside]
     print(f"Nuit retenue : {int(night.sum())} échéances ; alpha moyen {alpha[inside].mean():.2f} "
           f"(min {alpha[inside].min():.2f}, max {alpha[inside].max():.2f})")
@@ -184,6 +188,8 @@ def apply_model(tn, tx, X, Y, ctx):
         "wind_night_mean": None if w_m is None else float(np.mean(w_m)),
         "cloud_night_mean": None if c_m is None else float(np.mean(c_m)),
         "z_icon_source": z_src,
+        "gain_neg": state["gain_neg"],
+        "bias": state["bias"],
         "alpha_forced": None if forced is None else float(forced),
         "missing_inputs": [n for n, a_ in (("vent", wind), ("nebulosite", c)) if a_ is None],
     }
@@ -317,8 +323,12 @@ def record_history(tn, tx, tn_pre, tx_pre, layers, transform, to_l93, run_utc, w
     cols = {"tn": sample_grid(tn, transform, xs, ys), "tx": sample_grid(tx, transform, xs, ys),
             "tn_icon": sample_grid(tn_pre, transform, xs, ys), "tx_icon": sample_grid(tx_pre, transform, xs, ys)}
     if layers:
-        for k in ("alpha", "motif", "dz"):
-            cols[k] = sample_grid(layers[k], transform, xs, ys)
+        for k in ("alpha", "motif", "dz", "term"):
+            if k in layers:
+                cols[k] = sample_grid(layers[k], transform, xs, ys)
+        cols["motif_term"] = cols.pop("term") if "term" in cols else None
+        if cols["motif_term"] is None:
+            del cols["motif_term"]
     rows = []
     for i, st in enumerate(stations):
         row = {"id": st["id"], "name": st.get("name"), "source": st["source"],
@@ -331,6 +341,7 @@ def record_history(tn, tx, tn_pre, tx_pre, layers, transform, to_l93, run_utc, w
            "tx_truncated_at_utc": win_info.get("tx_truncated_at_utc"), "fallback": win_info.get("fallback"),
            "model": model_info.get("model"), "alpha_mean": model_info.get("alpha_mean"),
            "wind_night_mean": model_info.get("wind_night_mean"), "cloud_night_mean": model_info.get("cloud_night_mean"),
+           "gain_neg": model_info.get("gain_neg"), "bias": model_info.get("bias"),
            "stations": rows}
     path = HERE / "history" / f"forecast_{day}.json"
     path.parent.mkdir(parents=True, exist_ok=True)
