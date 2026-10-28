@@ -46,6 +46,13 @@ jobs:
         continue-on-error: true
         run: python archive_icon_ch1.py --probe
 
+      - name: Ajuster la correction radiative sur la nuit passée (stations)
+        continue-on-error: true
+        env:
+          INFOCLIMAT_TOKEN: ${{ secrets.INFOCLIMAT_TOKEN }}
+          DATACAKE_TOKENS: ${{ secrets.DATACAKE_TOKENS }}
+        run: python update_state.py
+
       - name: Construire le site (run 12Z, repli 9Z)
         run: python build_site.py --out site --wait-minutes 30
 
