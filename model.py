@@ -7,8 +7,9 @@ Modèle de correction 150 m (version 2 : correction FORTE en conditions radiativ
   a(x)      indice de conditions radiatives (ciel clair, vent faible), de 0 à 1, calculé avec ICON ;
   motif(x)  structure fine de la thermographie ECOSTRESS (froid dans les cuvettes, doux sur les reliefs) ;
   gain_neg  AMPLIFICATION du froid des cuvettes : ICON surestime fortement les minima dans les cuvettes à froid,
-            parfois de 5 à 10 °C, alors que le motif brut ne dépasse guère -3 °C. Valeur de départ 3 (un motif de
-            -2,5 °C devient -7,5 °C), puis ajustée chaque jour sur les stations (update_state.py) ;
+            parfois de 5 à 10 °C, alors que le motif brut ne dépasse guère -3 °C. Valeur de départ 2,5 (un motif de
+            -2,5 °C devient environ -6,2 °C), puis ajustée chaque jour sur les stations (update_state.py) ;
+            le refroidissement est plafonné progressivement vers 9 °C (linéaire jusqu'à 5,5 °C) ;
   b         biais général d'ICON en conditions radiatives, ajusté de la même façon (0 au départ) ;
   dz(x)     écart entre le MNT à 150 m et le relief vu par ICON ; G = -6,5 °C/km (correction d'altitude classique,
             appliquée surtout quand les conditions ne sont pas radiatives).
@@ -36,7 +37,8 @@ MAX_DZ = 600.0        # écart d'altitude maximal pris en compte (m)
 WIND_FULL, WIND_ZERO = 3.0, 6.0         # m/s
 CLOUD_FULL, CLOUD_ZERO = 0.30, 0.70     # fraction de ciel couvert
 
-GAIN_NEG_PRIOR = 3.0                    # amplification du motif froid, valeur de départ
+GAIN_NEG_PRIOR = 2.5                    # amplification du motif froid, valeur de départ (ajustée chaque jour)
+COLD_KNEE, COLD_MAX = 5.5, 9.0           # refroidissement linéaire jusqu'à 5,5 °C, puis plafonné progressivement vers 9 °C
 GAIN_POS = 0.7                          # motif doux (reliefs) : peu amplifié
 BIAS_PRIOR = 0.0
 GAIN_BOUNDS = (1.0, 5.0)
@@ -113,10 +115,23 @@ def load_state(path):
     return st
 
 
+def soft_cap(x, knee=COLD_KNEE, cap=COLD_MAX):
+    """Refroidissement (positif) : inchangé jusqu'à 'knee', puis compressé vers 'cap' (pas d'emballement aux extrêmes)."""
+    x = np.asarray(x, dtype=float)
+    span = cap - knee
+    return np.where(x <= knee, x, knee + span * np.tanh((x - knee) / span))
+
+
 def radiative_term(alpha, motif, state):
-    """Correction de Tn due aux conditions radiatives : a * (biais + gain_neg * motif froid + GAIN_POS * motif doux)."""
+    """
+    Correction de Tn due aux conditions radiatives :
+        a * ( biais - plafond(gain_neg * |motif froid|) + GAIN_POS * motif doux )
+    Le plafond évite que les pixels au motif le plus extrême produisent des minima irréalistes.
+    """
     a = np.clip(alpha, 0.0, 1.0)
-    return a * (state["bias"] + state["gain_neg"] * np.minimum(motif, 0.0) + GAIN_POS * np.maximum(motif, 0.0))
+    m = np.asarray(motif, dtype=float)
+    cold = -soft_cap(state["gain_neg"] * np.maximum(-m, 0.0))
+    return a * (state["bias"] + cold + GAIN_POS * np.maximum(m, 0.0))
 
 
 def apply_correction(tn, tx, dem, z_icon, alpha, motif, state=None):
