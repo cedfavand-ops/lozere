@@ -121,10 +121,14 @@ def main():
     now = dt.datetime.now(UTC)
     state = model.load_state(STATE_PATH)
     files = sorted(HIST.glob("forecast_*.json"))
+    print(f"Maintenant : {now:%d/%m %H:%M} UTC. État actuel : gain x{state['gain_neg']:.2f}, biais {state['bias']:+.2f} °C, "
+          f"{state['n_updates']} ajustement(s).")
     if not files:
-        print("Aucune prévision archivée : correction inchangée.")
+        print("Aucune prévision archivée dans history/ : correction inchangée.")
         return
+    print(f"{len(files)} prévision(s) archivée(s) : {', '.join(f.stem.replace('forecast_', '') for f in files)}")
     changed = False
+    treated = False
     for f in files:
         rec = json.loads(f.read_text(encoding="utf-8"))
         day = rec["day"]
@@ -132,21 +136,27 @@ def main():
             continue
         t0 = parse_utc(rec["tn_window_utc"][0])
         t1 = t0 + dt.timedelta(hours=NIGHT_HOURS)
-        if now < t1 + dt.timedelta(hours=1):
-            continue                                              # nuit pas encore terminée
+        ready = t1 + dt.timedelta(hours=1)
+        if now < ready:
+            print(f"  {day} : nuit pas encore terminée (exploitable après {ready:%d/%m %H:%M} UTC, "
+                  f"fin de nuit à {t1:%H:%M} UTC + délai des données).")
+            continue
         if now > t1 + dt.timedelta(days=RETRY_DAYS):
-            state["days_done"] = (state["days_done"] + [day])[-60:]   # trop ancien : on n'insiste plus
+            print(f"  {day} : trop ancienne, ignorée.")
+            state["days_done"] = (state["days_done"] + [day])[-60:]
             changed = True
             continue
         if not any(s.get("motif_term") is not None for s in rec["stations"]):
-            state["days_done"] = (state["days_done"] + [day])[-60:]   # ancien format d'archive
+            print(f"  {day} : archive d'un ancien format (sans motif_term), ignorée.")
+            state["days_done"] = (state["days_done"] + [day])[-60:]
             changed = True
             continue
         d0 = t0.date() - dt.timedelta(days=1)
         d1 = t1.date() + dt.timedelta(days=1)
         tn_obs = observed_night_minima(rec, d0, d1, t0, t1)
         est = estimate_correction(rec["stations"], tn_obs)
-        print(f"Nuit du {day} : {len(tn_obs)} stations avec minimum observé")
+        treated = True
+        print(f"Nuit du {day} : {len(tn_obs)} stations avec minimum observé sur {len(rec['stations'])}")
         dc = [s for s in rec["stations"] if s["id"].startswith("DC-") and s["id"] in tn_obs]
         for s in dc:
             print(f"  {s['id']:13s} observé {tn_obs[s['id']]:+5.1f} °C ; prévu {s['tn']:+5.1f} (ICON seul {s['tn_icon']:+5.1f})")
@@ -162,6 +172,8 @@ def main():
         print(f"  gain estimé pour la nuit : x{est['gain']:.2f} ; biais {est['bias']:+.2f} °C ({est['n']} stations, "
               f"écart résiduel {est['rmse']:.2f} °C, indice moyen {est['alpha_mean']:.2f})")
         print(f"  correction de la carte : gain x{old_g:.2f} -> x{state['gain_neg']:.2f} ; biais {old_b:+.2f} -> {state['bias']:+.2f} °C")
+    if not treated:
+        print("Aucune nuit exploitable pour le moment : correction inchangée.")
     if changed:
         save_state(state)
 
