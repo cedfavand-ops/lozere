@@ -54,7 +54,7 @@ jobs:
         run: python update_state.py
 
       - name: Construire le site (run 12Z, repli 9Z)
-        run: python build_site.py --out site --wait-minutes 30
+        run: python build_site.py --out site --wait-minutes 0
 
       - name: Page de démonstration (indice d'inversion forcé à 1)
         continue-on-error: true
