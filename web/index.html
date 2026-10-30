@@ -96,7 +96,8 @@ function drawLegend() {
   c.width = 256; c.height = 1;
   const ctx = c.getContext('2d');
   const g = ctx.createLinearGradient(0, 0, 256, 0);
-  meta.palette.forEach((col, i) => g.addColorStop(i / (meta.palette.length - 1), col));
+  const stops = meta[current].stops || meta.palette.map((c, i) => [i / (meta.palette.length - 1), c]);
+  stops.forEach(([pos, col]) => g.addColorStop(Math.min(Math.max(pos, 0), 1), col));
   ctx.fillStyle = g; ctx.fillRect(0, 0, 256, 1);
   document.getElementById('vmin').textContent = meta[current].vmin + ' °C';
   document.getElementById('vmax').textContent = meta[current].vmax + ' °C';
@@ -380,6 +381,7 @@ async function init() {
     ? `Indice d'inversion : <b>${meta.alpha_mean.toFixed(2)}</b> (0 = aucune, 1 = nuit calme et claire)` +
       (meta.wind_night_mean != null ? `<br>Vent nocturne moyen ${meta.wind_night_mean.toFixed(1)} m/s` : '') +
       (meta.cloud_night_mean != null ? `${meta.wind_night_mean != null ? ', ' : '<br>'}nébulosité ${Math.round(meta.cloud_night_mean * 100)} %` : '') +
+      (meta.gain_neg != null ? `<br>Amplification des cuvettes à froid : ×${meta.gain_neg.toFixed(1)} (ajustée sur les stations)` : '') +
       (missing ? `<br><b>Donnée ICON manquante : ${missing}</b>` : '') +
       `<br>Structure fine d'après une thermographie ECOSTRESS du 18/04/2026.`
     : `Carte ICON brute, sans correction à 150 m.`);
