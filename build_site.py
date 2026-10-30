@@ -266,23 +266,51 @@ COLD_PINK, COLD_VIOLET = "#ffc2e9", "#8e3fd6"
 T_PINK_MAX, T_VIOLET_MAX, T_EDGE = 0.5, 1.0, 0.15   # °C : rose jusqu'à +0,5 ; violet de +0,5 à +1 ; transitions de +-0,15 °C
 
 
+```python
 def lozere_anchors(vmin, vmax, n=16):
     """
-    Palette « lozere » ancrée sur des TEMPÉRATURES (°C) :
-      - rose pâle pour tout ce qui est <= +0,5 °C ; violet de +0,5 à +1 °C (transitions adoucies de 0,15 °C) ;
-      - puis, à partir de +1 °C, bleu foncé, bleu, cyan, vert, jaune, orange, rouge, rouge sombre jusqu'au maximum
-        de la carte. Si la carte est entièrement plus chaude que +1 °C, le dégradé démarre à son minimum.
-    Renvoie une liste (température, couleur hexadécimale).
+    Palette « lozere » ancrée sur la température minimale de la carte.
+
+    - Rose pâle : températures comprises entre vmin et vmin + 0,5 °C.
+    - Violet : températures comprises entre vmin + 0,5 °C et vmin + 1 °C.
+    - Au-delà de vmin + 1 °C : dégradé bleu foncé, bleu, cyan,
+      vert, jaune, orange, rouge et rouge sombre.
+
+    Les seuils évoluent automatiquement selon le minimum de la carte.
+    Renvoie une liste de points (température, couleur hexadécimale).
     """
     from matplotlib import colormaps
     from matplotlib.colors import to_hex
+
     turbo = colormaps["turbo"]
-    t0 = max(T_VIOLET_MAX + T_EDGE, vmin)
+
+    # Seuils calculés à partir de la température minimale réelle
+    t_pink_max = vmin + 0.5
+    t_violet_max = vmin + 1.0
+
+    # Début du dégradé coloré classique
+    t0 = t_violet_max
     t1 = max(vmax, t0 + 1.0)
-    pts = [(-100.0, COLD_PINK), (T_PINK_MAX - T_EDGE, COLD_PINK),
-           (T_PINK_MAX + T_EDGE, COLD_VIOLET), (T_VIOLET_MAX - T_EDGE, COLD_VIOLET)]
-    pts += [(t0 + (t1 - t0) * k / n, to_hex(turbo(0.06 + 0.94 * k / n))) for k in range(n + 1)]
+
+    # Zones rose pâle et violette
+    pts = [
+        (vmin - 100.0, COLD_PINK),
+        (vmin, COLD_PINK),
+        (t_pink_max, COLD_PINK),
+        (t_violet_max, COLD_VIOLET),
+    ]
+
+    # Dégradé classique au-dessus de vmin + 1 °C
+    pts += [
+        (
+            t0 + (t1 - t0) * k / n,
+            to_hex(turbo(0.06 + 0.94 * k / n))
+        )
+        for k in range(n + 1)
+    ]
+
     return pts
+```
 
 
 def lozere_rgb(values, vmin, vmax):
