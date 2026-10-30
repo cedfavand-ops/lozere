@@ -12,6 +12,11 @@ Chaque soir, avant de construire la carte, on regarde la NUIT qui vient de se te
     deux premières nuits, ensuite 35 %),
     bornés (gain entre 1 et 5, biais entre -4 et +2 °C), dans history/correction_state.json.
 
+En plus de cet ajustement GLOBAL, chaque station apprend sa propre amplitude (ancrage) : l'erreur finale de la
+prévision à la station, rapportée à l'indice radiatif, corrige l'amplitude A de la station (poids 90 %, 60 %, puis 40 %).
+La carte transmet ensuite A aux pixels voisins de relief semblable (model.station_field). Quelques stations suffisent,
+contrairement à l'ajustement global (au moins 8 stations).
+
 Lancement : étape du workflow de publication (avant build_site.py), ou  python update_state.py
 """
 import datetime as dt
@@ -33,6 +38,7 @@ MIN_STATIONS = 8         # stations minimales pour estimer une nuit
 MIN_MEAN_ALPHA = 0.5     # nuit assez radiative
 MIN_SPREAD = 0.25        # contraste minimal du motif froid pondéré (écart-type de a * motif froid)
 NIGHT_HOURS = 15         # de 18 h locale à 9 h locale
+ANCHORED_PREFIXES = ("DC-",)   # stations exclues de l'ajustement GÉNÉRAL du gain (cuvettes à froid : ancrage individuel)
 RETRY_DAYS = 3           # une nuit dont les données arrivent en retard est retentée pendant 3 jours
 
 
@@ -40,18 +46,27 @@ def parse_utc(s):
     return dt.datetime.fromisoformat(s)
 
 
+def alpha_reference(stations):
+    """Indice régional d'une prévision archivée : quart le plus calme des stations (même règle que la carte)."""
+    vals = [float(s["alpha"]) for s in stations if s.get("alpha") is not None]
+    return float(np.quantile(vals, 0.75)) if vals else 0.0
+
+
 def estimate_correction(stations, tn_obs):
     """
-    stations : stations de la prévision archivée (tn, motif, alpha, motif_term) ; tn_obs : {id: minimum observé}.
+    stations : stations de la prévision archivée (tn, motif, alpha, motif_term, station_term) ; tn_obs : {id: minimum observé}.
     Renvoie {"gain", "bias", "n", "rmse", "alpha_mean"} ou {"skip": raison}.
     """
+    a_ref = alpha_reference(stations)
     rows = []
     for st in stations:
         o = tn_obs.get(st["id"])
+        if st["id"].startswith(ANCHORED_PREFIXES):
+            continue          # cuvettes à froid instrumentées : elles ont leur propre amplitude (ancrage), hors gain général
         if o is None or any(st.get(k) is None for k in ("tn", "motif_term", "alpha", "motif")):
             continue
-        a, m = float(st["alpha"]), float(st["motif"])
-        base = float(st["tn"]) - float(st["motif_term"])                  # prévision sans correction radiative
+        a, m = max(float(st["alpha"]), a_ref), float(st["motif"])
+        base = float(st["tn"]) - float(st["motif_term"]) - float(st.get("station_term") or 0.0)   # sans correction radiative
         r = o - base - a * model.GAIN_POS * max(m, 0.0)                    # ce que gain et biais doivent expliquer
         rows.append((a, a * min(m, 0.0), r))
     if len(rows) < MIN_STATIONS:
@@ -68,6 +83,32 @@ def estimate_correction(stations, tn_obs):
     resid = y - X @ coef
     return {"bias": float(coef[0]), "gain": float(coef[1]), "n": len(rows),
             "rmse": float(np.sqrt(np.mean(resid ** 2))), "alpha_mean": float(A[:, 0].mean())}
+
+
+def update_stations(state, stations, tn_obs, day):
+    """
+    Ancrage : chaque station dont on connaît le minimum apprend son amplitude A (°C par unité d'indice).
+    erreur = observé - prévu (négative : prévision trop chaude) ; A <- A + poids * erreur / indice, borné.
+    Renvoie la liste (id, ancien A, nouveau A, erreur).
+    """
+    a_ref = alpha_reference(stations)
+    if a_ref < MIN_MEAN_ALPHA:
+        return []
+    out = []
+    for st in stations:
+        o = tn_obs.get(st["id"])
+        if o is None or st.get("tn") is None:
+            continue
+        a_i = max(float(st.get("alpha") or 0.0), a_ref)
+        rec = state.setdefault("stations", {}).setdefault(st["id"], {"A": 0.0, "n": 0})
+        eta = {0: 0.9, 1: 0.6}.get(rec["n"], 0.4)
+        err = o - float(st["tn"])
+        old = rec["A"]
+        rec["A"] = float(np.clip(old + eta * float(np.clip(err / a_i, -6.0, 6.0)), *model.STATION_A_BOUNDS))
+        rec["n"] += 1
+        rec["last"] = day
+        out.append((st["id"], old, rec["A"], err))
+    return out
 
 
 def update_state(state, est, day):
@@ -100,7 +141,11 @@ def observed_night_minima(rec, d_start, d_end, t0, t1):
             print("  Infoclimat : clé liée à une IP, stations ignorées.")
     if any(s["source"] == "meteofrance" for s in st):
         try:
-            series.update(obs.fetch_meteofrance(d_start, d_end)[1])
+            mf = obs.fetch_meteofrance(d_start, d_end)[1]
+            last = max((p["t"] for rows in mf.values() for p in rows), default=None)
+            series.update(mf)
+            if last is not None:
+                print(f"  Météo-France : dernier relevé disponible à {last:%d/%m %H} UTC (fin de nuit à {t1:%H} UTC)")
         except Exception as e:
             print(f"  Météo-France indisponible ({type(e).__name__}: {e})")
     dc = [s for s in st if s["source"] == "datacake"]
@@ -109,11 +154,17 @@ def observed_night_minima(rec, d_start, d_end, t0, t1):
             series.update(obs.fetch_datacake(dc, d_start.isoformat(), d_end.isoformat()))
         except Exception as e:
             print(f"  Datacake indisponible ({type(e).__name__}: {e})")
-    out = {}
+    out, incomplete = {}, 0
     for s in st:
-        w = obs.window_extreme(series.get(s["id"], []), t0, t1, "min", min_cov=0.8)
+        rows = series.get(s["id"], [])
+        if rows and max(p["t"] for p in rows) < t1 - dt.timedelta(hours=1):
+            incomplete += 1                                   # les relevés s'arrêtent avant l'aube : minimum pas encore connu
+            continue
+        w = obs.window_extreme(rows, t0, t1, "min", min_cov=0.8)
         if w is not None:
             out[s["id"]] = w["value"]
+    if incomplete:
+        print(f"  {incomplete} station(s) écartée(s) : relevés qui s'arrêtent avant la fin de la nuit")
     return out
 
 
@@ -160,8 +211,17 @@ def main():
         dc = [s for s in rec["stations"] if s["id"].startswith("DC-") and s["id"] in tn_obs]
         for s in dc:
             print(f"  {s['id']:13s} observé {tn_obs[s['id']]:+5.1f} °C ; prévu {s['tn']:+5.1f} (ICON seul {s['tn_icon']:+5.1f})")
+        anch = update_stations(state, rec["stations"], tn_obs, day)
+        if anch:
+            changed = True
+            for sid, old_a, new_a, err in anch:
+                if sid.startswith("DC-"):
+                    print(f"  ancrage {sid:13s} : erreur de la prévision {err:+5.1f} °C ; amplitude {old_a:+.2f} -> {new_a:+.2f}")
+            print(f"  ancrage : {len(anch)} stations mises à jour")
+        elif alpha_reference(rec["stations"]) < MIN_MEAN_ALPHA:
+            print("  ancrage inchangé : nuit peu radiative")
         if "skip" in est:
-            print(f"  correction inchangée : {est['skip']}")
+            print(f"  correction globale inchangée : {est['skip']}")
             if not est.get("retry") or now > t1 + dt.timedelta(days=1):
                 state["days_done"] = (state["days_done"] + [day])[-60:]
                 changed = True

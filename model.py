@@ -7,8 +7,10 @@ Modèle de correction 150 m (version 2 : correction FORTE en conditions radiativ
   a(x)      indice de conditions radiatives (ciel clair, vent faible), de 0 à 1, calculé avec ICON ;
   motif(x)  structure fine de la thermographie ECOSTRESS (froid dans les cuvettes, doux sur les reliefs) ;
   gain_neg  AMPLIFICATION du froid des cuvettes : ICON surestime fortement les minima dans les cuvettes à froid,
-            parfois de 5 à 10 °C, alors que le motif brut ne dépasse guère -3 °C. Valeur de départ 2,5 (un motif de
-            -2,5 °C devient environ -6,2 °C), puis ajustée chaque jour sur les stations (update_state.py) ;
+            parfois de 5 à 10 °C, alors que le motif brut ne dépasse guère -3 °C. Valeur de départ 1,8 (un motif de
+            -2,5 °C devient environ -4,5 °C), puis ajustée chaque jour sur les stations ORDINAIRES (Météo-France...) ;
+            les cuvettes à froid instrumentées (Datacake) ne servent pas à cet ajustement : chacune apprend sa propre
+            amplitude (ancrage), transmise aux pixels voisins de relief semblable ;
             le refroidissement est plafonné progressivement vers 9 °C (linéaire jusqu'à 5,5 °C) ;
   b         biais général d'ICON en conditions radiatives, ajusté de la même façon (0 au départ) ;
   dz(x)     écart entre le MNT à 150 m et le relief vu par ICON ; G = -6,5 °C/km (correction d'altitude classique,
@@ -37,13 +39,21 @@ MAX_DZ = 600.0        # écart d'altitude maximal pris en compte (m)
 WIND_FULL, WIND_ZERO = 3.0, 6.0         # m/s
 CLOUD_FULL, CLOUD_ZERO = 0.30, 0.70     # fraction de ciel couvert
 
-GAIN_NEG_PRIOR = 2.5                    # amplification du motif froid, valeur de départ (ajustée chaque jour)
+GAIN_NEG_PRIOR = 1.8                    # amplification du motif froid hors stations, valeur de départ (ajustée chaque jour)
 COLD_KNEE, COLD_MAX = 5.5, 9.0           # refroidissement linéaire jusqu'à 5,5 °C, puis plafonné progressivement vers 9 °C
 GAIN_POS = 0.7                          # motif doux (reliefs) : peu amplifié
 BIAS_PRIOR = 0.0
 GAIN_BOUNDS = (1.0, 5.0)
 BIAS_BOUNDS = (-4.0, 2.0)
 STATE_NAME = "correction_state.json"
+
+# Ancrage sur les stations : chaque station apprend sa propre amplitude A (°C par unité d'indice radiatif) et la
+# transmet aux pixels voisins de relief semblable (même motif, même altitude).
+STATION_RADIUS = 1500.0                 # m, portée du noyau gaussien
+STATION_MOTIF_SCALE = 1.0               # °C : écart de motif au-delà duquel l'influence décroît
+STATION_DZ_SCALE = 60.0                 # m : écart d'altitude au-delà duquel l'influence décroît
+STATION_CAP = 9.0                       # °C : valeur maximale du terme d'ancrage
+STATION_A_BOUNDS = (-10.0, 3.0)
 
 
 def smoothstep(x):
@@ -97,7 +107,7 @@ def hsurf_ok(z_icon, dem):
 
 
 def default_state():
-    return {"gain_neg": GAIN_NEG_PRIOR, "bias": BIAS_PRIOR, "n_updates": 0, "days_done": [], "log": []}
+    return {"gain_neg": GAIN_NEG_PRIOR, "bias": BIAS_PRIOR, "n_updates": 0, "days_done": [], "log": [], "stations": {}}
 
 
 def load_state(path):
@@ -122,6 +132,43 @@ def soft_cap(x, knee=COLD_KNEE, cap=COLD_MAX):
     return np.where(x <= knee, x, knee + span * np.tanh((x - knee) / span))
 
 
+def regional_alpha(alpha_pts, q=0.75):
+    """
+    Indice radiatif RÉGIONAL : le quart le plus calme des mailles d'ICON. Dans une cuvette l'air reste calme même
+    quand ICON annonce du vent sur le plateau voisin ; un indice purement local annulait la correction (nuit du 28/10 :
+    indice nul à Saint-Paul alors que la station a relevé -6,3 °C).
+    """
+    return float(np.quantile(np.asarray(alpha_pts, dtype=float), q))
+
+
+def station_field(X, Y, motif, dem, stations, state, step=150.0):
+    """
+    Terme d'ancrage S(x) en °C par unité d'indice radiatif : moyenne, pondérée par la distance et la ressemblance de
+    relief, des amplitudes A apprises aux stations (state["stations"][id]["A"]).
+    stations : liste de dicts {id, x, y, motif, dem} en Lambert-93, motif et altitude pris au pixel de la station.
+    """
+    num = np.zeros(X.shape)
+    den = np.zeros(X.shape)
+    x0, y0 = X[0, 0], Y[0, 0]
+    n = int(3 * STATION_RADIUS / step) + 1
+    for st in stations:
+        rec = state.get("stations", {}).get(st["id"])
+        if not rec:
+            continue
+        c = int(round((st["x"] - x0) / step))
+        r = int(round((y0 - st["y"]) / step))
+        r0, r1, c0, c1 = max(r - n, 0), min(r + n + 1, X.shape[0]), max(c - n, 0), min(c + n + 1, X.shape[1])
+        if r0 >= r1 or c0 >= c1:
+            continue
+        sl = (slice(r0, r1), slice(c0, c1))
+        d2 = (X[sl] - st["x"]) ** 2 + (Y[sl] - st["y"]) ** 2
+        w = (np.exp(-d2 / STATION_RADIUS ** 2) * np.exp(-np.abs(motif[sl] - st["motif"]) / STATION_MOTIF_SCALE)
+             * np.exp(-np.abs(dem[sl] - st["dem"]) / STATION_DZ_SCALE))
+        num[sl] += w * rec["A"]
+        den[sl] += w
+    return np.clip(num / np.maximum(1.0, den), -STATION_CAP, STATION_CAP)
+
+
 def radiative_term(alpha, motif, state):
     """
     Correction de Tn due aux conditions radiatives :
@@ -134,10 +181,12 @@ def radiative_term(alpha, motif, state):
     return a * (state["bias"] + cold + GAIN_POS * np.maximum(m, 0.0))
 
 
-def apply_correction(tn, tx, dem, z_icon, alpha, motif, state=None):
+def apply_correction(tn, tx, dem, z_icon, alpha, motif, state=None, station=None):
     state = state or default_state()
     dz = np.clip(dem - z_icon, -MAX_DZ, MAX_DZ)
     a = np.clip(alpha, 0.0, 1.0)
     tn2 = tn + (1.0 - a) * G_NUIT * dz + radiative_term(alpha, motif, state)
+    if station is not None:
+        tn2 = tn2 + a * station                       # ancrage sur les stations (appris chaque nuit)
     tx2 = tx + G_JOUR * dz
     return tn2.astype("float32"), tx2.astype("float32")

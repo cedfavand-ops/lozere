@@ -156,6 +156,10 @@ def apply_model(tn, tx, X, Y, ctx):
     alpha_pts, w_m, c_m = model.alpha_mesh(wind, c, night, len(pts))
     alpha = griddata(pts, alpha_pts, (X, Y), method="linear")
     alpha = np.where(np.isfinite(alpha), alpha, np.nanmean(alpha_pts))
+    alpha_reg = model.regional_alpha(alpha_pts)                   # le quart le plus calme du domaine
+    alpha = np.maximum(alpha, alpha_reg)
+    print(f"Indice radiatif régional (quart le plus calme) : {alpha_reg:.2f} ; indice retenu en moyenne : "
+          f"{float(alpha[ctx['inside']].mean()):.2f}")
     if w_m is not None:
         print(f"Vent nocturne à 10 m : moyenne {np.mean(w_m):.1f} m/s (mailles de {np.min(w_m):.1f} à {np.max(w_m):.1f})")
     if c_m is not None:
@@ -168,9 +172,22 @@ def apply_model(tn, tx, X, Y, ctx):
     state = model.load_state(HERE / "history" / model.STATE_NAME)
     print(f"Correction radiative : gain sur le motif froid x{state['gain_neg']:.2f}, biais {state['bias']:+.2f} °C "
           f"({state['n_updates']} ajustements sur les stations)")
-    tn2, tx2 = model.apply_correction(tn, tx, dem, z_icon, alpha, motif, state)
+    # Ancrage sur les stations : chaque station a appris sa propre amplitude (update_state.py)
+    S = None
+    anchored = []
+    if state.get("stations") and ctx.get("to_l93") is not None and ctx.get("transform") is not None:
+        for st in load_stations():
+            if st["id"] in state["stations"]:
+                x, y = ctx["to_l93"].transform(float(st["lon"]), float(st["lat"]))
+                anchored.append({"id": st["id"], "x": x, "y": y,
+                                 "motif": float(sample_grid(motif, ctx["transform"], [x], [y])[0]),
+                                 "dem": float(sample_grid(dem, ctx["transform"], [x], [y])[0])})
+        S = model.station_field(X, Y, motif, dem, anchored, state)
+        print(f"Ancrage aux stations : {len(anchored)} stations, terme de -{abs(S.min()):.1f} à {S.max():+.1f} °C par unité d'indice")
+    tn2, tx2 = model.apply_correction(tn, tx, dem, z_icon, alpha, motif, state, S)
     ctx["layers"] = {"alpha": alpha, "motif": motif, "dz": np.clip(dem - z_icon, -model.MAX_DZ, model.MAX_DZ),
-                     "term": model.radiative_term(alpha, motif, state)}
+                     "term": model.radiative_term(alpha, motif, state),
+                     "station_term": np.clip(alpha, 0, 1) * (S if S is not None else 0.0) * np.ones(X.shape)}
     d_tn, d_tx = (tn2 - tn)[inside], (tx2 - tx)[inside]
     print(f"Nuit retenue : {int(night.sum())} échéances ; alpha moyen {alpha[inside].mean():.2f} "
           f"(min {alpha[inside].min():.2f}, max {alpha[inside].max():.2f})")
@@ -188,6 +205,8 @@ def apply_model(tn, tx, X, Y, ctx):
         "wind_night_mean": None if w_m is None else float(np.mean(w_m)),
         "cloud_night_mean": None if c_m is None else float(np.mean(c_m)),
         "z_icon_source": z_src,
+        "alpha_regional": float(alpha_reg),
+        "stations_anchored": len(anchored),
         "gain_neg": state["gain_neg"],
         "bias": state["bias"],
         "alpha_forced": None if forced is None else float(forced),
@@ -243,8 +262,62 @@ def get_cmap(name):
     return LinearSegmentedColormap.from_list("lozere", cold + warm, N=512)
 
 
+COLD_PINK, COLD_VIOLET = "#ffc2e9", "#8e3fd6"
+T_PINK_MAX, T_VIOLET_MAX, T_EDGE = 0.5, 1.0, 0.15   # °C : rose jusqu'à +0,5 ; violet de +0,5 à +1 ; transitions de +-0,15 °C
+
+
+def lozere_anchors(vmin, vmax, n=16):
+    """
+    Palette « lozere » ancrée sur des TEMPÉRATURES (°C) :
+      - rose pâle pour tout ce qui est <= +0,5 °C ; violet de +0,5 à +1 °C (transitions adoucies de 0,15 °C) ;
+      - puis, à partir de +1 °C, bleu foncé, bleu, cyan, vert, jaune, orange, rouge, rouge sombre jusqu'au maximum
+        de la carte. Si la carte est entièrement plus chaude que +1 °C, le dégradé démarre à son minimum.
+    Renvoie une liste (température, couleur hexadécimale).
+    """
+    from matplotlib import colormaps
+    from matplotlib.colors import to_hex
+    turbo = colormaps["turbo"]
+    t0 = max(T_VIOLET_MAX + T_EDGE, vmin)
+    t1 = max(vmax, t0 + 1.0)
+    pts = [(-100.0, COLD_PINK), (T_PINK_MAX - T_EDGE, COLD_PINK),
+           (T_PINK_MAX + T_EDGE, COLD_VIOLET), (T_VIOLET_MAX - T_EDGE, COLD_VIOLET)]
+    pts += [(t0 + (t1 - t0) * k / n, to_hex(turbo(0.06 + 0.94 * k / n))) for k in range(n + 1)]
+    return pts
+
+
+def lozere_rgb(values, vmin, vmax):
+    from matplotlib.colors import to_rgb
+    pts = lozere_anchors(vmin, vmax)
+    T = np.array([p[0] for p in pts])
+    cols = np.array([to_rgb(p[1]) for p in pts])
+    v = np.asarray(values, dtype=float)
+    return np.stack([np.interp(v, T, cols[:, j]) for j in range(3)], axis=-1)
+
+
+def palette_stops(vmin, vmax, cmap_name="lozere"):
+    """Couleurs de la légende : liste [position entre 0 et 1, couleur], positions croissantes."""
+    from matplotlib.colors import to_hex
+    if cmap_name != "lozere":
+        pal = palette_hex(cmap_name)
+        return [[i / (len(pal) - 1), c] for i, c in enumerate(pal)]
+    pts = lozere_anchors(vmin, vmax)
+    span = float(vmax - vmin)
+    stops = [[0.0, to_hex(lozere_rgb(vmin, vmin, vmax))]]
+    for t, c in pts:
+        pos = (t - vmin) / span
+        if 1e-6 < pos < 1 - 1e-6:
+            stops.append([round(pos, 5), c])
+    stops.append([1.0, to_hex(lozere_rgb(vmax, vmin, vmax))])
+    return stops
+
+
 def colorize(arr, vmin, vmax, cmap_name="lozere"):
     from PIL import Image
+    if cmap_name == "lozere":
+        rgb = lozere_rgb(np.nan_to_num(arr, nan=vmin), vmin, vmax)
+        rgba = np.concatenate([(rgb * 255).round().astype("uint8"), np.zeros(rgb.shape[:-1] + (1,), "uint8")], axis=-1)
+        rgba[..., 3] = np.where(np.isnan(arr), 0, 255)
+        return Image.fromarray(rgba, "RGBA")
     norm = np.clip((np.nan_to_num(arr, nan=vmin) - vmin) / (vmax - vmin), 0, 1)
     rgba = (get_cmap(cmap_name)(norm) * 255).astype("uint8")
     rgba[..., 3] = np.where(np.isnan(arr), 0, 255)       # transparent hors Lozère
@@ -323,7 +396,7 @@ def record_history(tn, tx, tn_pre, tx_pre, layers, transform, to_l93, run_utc, w
     cols = {"tn": sample_grid(tn, transform, xs, ys), "tx": sample_grid(tx, transform, xs, ys),
             "tn_icon": sample_grid(tn_pre, transform, xs, ys), "tx_icon": sample_grid(tx_pre, transform, xs, ys)}
     if layers:
-        for k in ("alpha", "motif", "dz", "term"):
+        for k in ("alpha", "motif", "dz", "term", "station_term"):
             if k in layers:
                 cols[k] = sample_grid(layers[k], transform, xs, ys)
         cols["motif_term"] = cols.pop("term") if "term" in cols else None
@@ -369,7 +442,7 @@ def build_site(lat, lon, tn_pts, tx_pts, run_utc, win_info, geojson, out_dir, cm
     tn_pre, tx_pre = tn.copy(), tx.copy()                # ICON seul, avant correction (pour l'historique)
 
     inside = geometry_mask([geom_l93], out_shape=(h, w), transform=transform, invert=True)
-    ctx = dict(ctx or {}, run_utc=run_utc, pts=pts, lat=lat, lon=lon, inside=inside)
+    ctx = dict(ctx or {}, run_utc=run_utc, pts=pts, lat=lat, lon=lon, inside=inside, to_l93=to_l93, transform=transform)
     tn, tx, model_info = apply_model(tn, tx, X, Y, ctx)
     tn, tx = smooth_field(tn), smooth_field(tx)          # lissage léger : bords nets mais arrondis
     tn_full, tx_full = tn.copy(), tx.copy()              # champs sur toute l'emprise (pour les contours)
@@ -400,7 +473,8 @@ def build_site(lat, lon, tn_pts, tx_pts, run_utc, win_info, geojson, out_dir, cm
         colorize(upsample_fill(merc_full), vmin, vmax, cmap).convert("RGB").save(out / f"{name}.png", optimize=True)
         (out / f"{name}.bin").write_bytes(encode_int16(merc_full))   # champ complet : isolignes et lecture au survol
         meta[name] = {"vmin": vmin, "vmax": vmax,
-                      "min": float(np.nanmin(merc)), "max": float(np.nanmax(merc))}
+                      "min": float(np.nanmin(merc)), "max": float(np.nanmax(merc)),
+                      "stops": palette_stops(vmin, vmax, cmap)}
         meta["width"], meta["height"] = int(merc.shape[1]), int(merc.shape[0])
         meta["bounds_3857"] = [float(b) for b in bounds]
     w_, s_, e_, n_ = transform_bounds("EPSG:3857", "EPSG:4326", *meta["bounds_3857"])
