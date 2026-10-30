@@ -246,7 +246,7 @@ def color_scale(arr):
 def get_cmap(name):
     """
     « lozere » : du plus froid au plus chaud, rose -> mauve -> bleu foncé -> bleu -> cyan -> vert -> jaune
-    -> orange -> rouge -> rouge sombre (la fin est la palette « turbo »). Tout autre nom : palette matplotlib.
+    -> orange -> rouge -> rouge vif (la fin est la palette « turbo »). Tout autre nom : palette matplotlib.
     """
     from matplotlib import colormaps
     if name != "lozere":
