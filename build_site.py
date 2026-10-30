@@ -246,7 +246,7 @@ def color_scale(arr):
 def get_cmap(name):
     """
     « lozere » : du plus froid au plus chaud, rose -> mauve -> bleu foncé -> bleu -> cyan -> vert -> jaune
-    -> orange -> rouge -> rouge vif (la fin est la palette « turbo »). Tout autre nom : palette matplotlib.
+    -> orange -> rouge -> rouge sombre (la fin est la palette « turbo »). Tout autre nom : palette matplotlib.
     """
     from matplotlib import colormaps
     if name != "lozere":
@@ -263,55 +263,36 @@ def get_cmap(name):
 
 
 COLD_PINK, COLD_VIOLET = "#ffc2e9", "#8e3fd6"
-T_PINK_MAX, T_VIOLET_MAX, T_EDGE = 0.2, 0.5, 0.1   # °C : rose jusqu'à +0,2 ; violet de +0,2 à +0.5 ; transitions de +-0,1 °C
+COLD_DARKBLUE, COLD_BLUE = "#22249a", "#2f7bff"
+# Décalages (°C) PAR RAPPORT AU MINIMUM de la carte : rose pâle jusqu'à +0,3 ; violet dès +0,3 ; bleu foncé à +1,0 ; bleu à +1,5
+OFF_VIOLET, OFF_VIOLET_END, OFF_DARKBLUE, OFF_BLUE = 0.30, 0.85, 1.00, 1.50
+WARM = [("#19d3f0", 0.25), ("#3ee06a", 0.55), ("#b6ec2f", 0.80)]      # cyan, vert, vert-jaune (parts de la zone avant le jaune)
+YELLOW, ORANGE, ORANGE_RED, RED = "#ffe600", "#ff9d00", "#ff5a00", "#ff1a1a"
 
 
-def lozere_anchors(vmin, vmax, n=16):
+def lozere_anchors(vmin, vmax):
     """
-    Palette « lozere » ancrée sur la température minimale de la carte.
-
-    - Rose pâle : de vmin à vmin + 0,2 °C.
-    - Violet : de vmin + 0,2 à vmin + 0,5 °C.
-    - Bleu foncé : de vmin + 0,5 à vmin + 1,0 °C.
-    - Au-delà de vmin + 1,0 °C : dégradé bleu, cyan, vert,
-      jaune, orange, rouge et rouge vif.
-
-    Renvoie une liste de points (température, couleur hexadécimale).
+    Palette « lozere », calée sur le MINIMUM et le MAXIMUM de la carte :
+      - le point le plus froid de la carte est rose pâle ; dès +0,3 °C au-dessus du minimum : violet ;
+        dès +1,0 °C : bleu foncé ; dès +1,5 °C : bleu ;
+      - puis cyan, vert, jaune vif au milieu de la plage, orange, et rouge vif (pas de marron) au maximum.
+    Si la plage est étroite (moins de 6 °C), les décalages du froid sont réduits proportionnellement.
+    Renvoie une liste (température, couleur hexadécimale), températures croissantes.
     """
-    from matplotlib import colormaps
-    from matplotlib.colors import to_hex
-
-    turbo = colormaps["turbo"]
-
-    # Seuils calculés à partir du minimum réel de la carte
-    t_pink_max = vmin + 0.2
-    t_violet_max = vmin + 0.5
-    t_blue_max = vmin + 1.0
-
-    # Étendue du dégradé classique
-    t0 = t_blue_max
-    t1 = max(vmax, t0 + 1.0)
-
-    # Rose pâle, violet et bleu foncé
-    pts = [
-        (vmin - 100.0, COLD_PINK),
-        (vmin, COLD_PINK),
-        (t_pink_max, COLD_PINK),
-        (t_violet_max, COLD_VIOLET),
-        (t_blue_max, to_hex(turbo(0.06))),
-    ]
-
-    # Dégradé classique au-dessus de vmin + 1 °C
-    pts += [
-        (
-            t0 + (t1 - t0) * k / n,
-            to_hex(turbo(0.06 + 0.94 * k / n))
-        )
-        for k in range(1, n + 1)
-    ]
-
-    return pts
-
+    R = max(float(vmax) - float(vmin), 0.5)
+    k = min(1.0, R / 6.0)
+    t_b = vmin + OFF_BLUE * k
+    t_mid = vmin + R / 2.0
+    fy = float(np.clip((t_mid - t_b) / max(vmax - t_b, 1e-6), 0.35, 0.65))
+    warm_span = max(vmax - t_b, 0.2)
+    pts = [(vmin, COLD_PINK), (vmin + OFF_VIOLET * k, COLD_PINK), (vmin + (OFF_VIOLET + 0.15) * k, COLD_VIOLET),
+           (vmin + OFF_VIOLET_END * k, COLD_VIOLET), (vmin + OFF_DARKBLUE * k, COLD_DARKBLUE), (t_b, COLD_BLUE)]
+    pts += [(t_b + warm_span * f * fy, c) for c, f in WARM]
+    pts += [(t_b + warm_span * fy, YELLOW),
+            (t_b + warm_span * (fy + 0.40 * (1 - fy)), ORANGE),
+            (t_b + warm_span * (fy + 0.75 * (1 - fy)), ORANGE_RED),
+            (t_b + warm_span, RED)]
+    return [(-100.0, COLD_PINK)] + pts + [(max(vmax, t_b + warm_span) + 100.0, RED)]
 
 
 def lozere_rgb(values, vmin, vmax):
@@ -496,7 +477,11 @@ def build_site(lat, lon, tn_pts, tx_pts, run_utc, win_info, geojson, out_dir, cm
     }
     for name, arr, arr_full in (("tn", tn, tn_full), ("tx", tx, tx_full)):
         merc, bounds = to_mercator(arr, transform)
-        vmin, vmax = color_scale(merc)
+        if cmap == "lozere":     # palette calée sur le minimum et le maximum réels de la carte (arrondis au dixième)
+            vmin, vmax = round(float(np.nanmin(merc)), 1), round(float(np.nanmax(merc)), 1)
+            vmax = max(vmax, vmin + 1.0)
+        else:
+            vmin, vmax = color_scale(merc)
         merc_full, _ = to_mercator(arr_full, transform)
         # Image de couleurs sur toute l'emprise (le voile blanc de la page la découpe au contour exact du département)
         colorize(upsample_fill(merc_full), vmin, vmax, cmap).convert("RGB").save(out / f"{name}.png", optimize=True)
