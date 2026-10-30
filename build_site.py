@@ -270,12 +270,12 @@ def lozere_anchors(vmin, vmax, n=16):
     """
     Palette « lozere » ancrée sur la température minimale de la carte.
 
-    - Rose pâle : températures comprises entre vmin et vmin + 0,5 °C.
-    - Violet : températures comprises entre vmin + 0,5 °C et vmin + 1 °C.
-    - Au-delà de vmin + 1 °C : dégradé bleu foncé, bleu, cyan,
-      vert, jaune, orange, rouge et rouge sombre.
+    - Rose pâle : de vmin à vmin + 0,2 °C.
+    - Violet : de vmin + 0,2 à vmin + 0,5 °C.
+    - Bleu foncé : de vmin + 0,5 à vmin + 1,0 °C.
+    - Au-delà de vmin + 1,0 °C : dégradé bleu, cyan, vert,
+      jaune, orange, rouge et rouge sombre.
 
-    Les seuils évoluent automatiquement selon le minimum de la carte.
     Renvoie une liste de points (température, couleur hexadécimale).
     """
     from matplotlib import colormaps
@@ -283,20 +283,22 @@ def lozere_anchors(vmin, vmax, n=16):
 
     turbo = colormaps["turbo"]
 
-    # Seuils calculés à partir de la température minimale réelle
-    t_pink_max = vmin + 0.5
-    t_violet_max = vmin + 1.0
+    # Seuils calculés à partir du minimum réel de la carte
+    t_pink_max = vmin + 0.2
+    t_violet_max = vmin + 0.5
+    t_blue_max = vmin + 1.0
 
-    # Début du dégradé coloré classique
-    t0 = t_violet_max
+    # Étendue du dégradé classique
+    t0 = t_blue_max
     t1 = max(vmax, t0 + 1.0)
 
-    # Zones rose pâle et violette
+    # Rose pâle, violet et bleu foncé
     pts = [
         (vmin - 100.0, COLD_PINK),
         (vmin, COLD_PINK),
         (t_pink_max, COLD_PINK),
         (t_violet_max, COLD_VIOLET),
+        (t_blue_max, to_hex(turbo(0.06))),
     ]
 
     # Dégradé classique au-dessus de vmin + 1 °C
@@ -305,7 +307,7 @@ def lozere_anchors(vmin, vmax, n=16):
             t0 + (t1 - t0) * k / n,
             to_hex(turbo(0.06 + 0.94 * k / n))
         )
-        for k in range(n + 1)
+        for k in range(1, n + 1)
     ]
 
     return pts
