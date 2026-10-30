@@ -266,7 +266,6 @@ COLD_PINK, COLD_VIOLET = "#ffc2e9", "#8e3fd6"
 T_PINK_MAX, T_VIOLET_MAX, T_EDGE = 0.5, 1.0, 0.15   # °C : rose jusqu'à +0,5 ; violet de +0,5 à +1 ; transitions de +-0,15 °C
 
 
-```python
 def lozere_anchors(vmin, vmax, n=16):
     """
     Palette « lozere » ancrée sur la température minimale de la carte.
@@ -310,7 +309,7 @@ def lozere_anchors(vmin, vmax, n=16):
     ]
 
     return pts
-```
+
 
 
 def lozere_rgb(values, vmin, vmax):
