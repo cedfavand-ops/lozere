@@ -263,7 +263,7 @@ def get_cmap(name):
 
 
 COLD_PINK, COLD_VIOLET = "#ffc2e9", "#8e3fd6"
-T_PINK_MAX, T_VIOLET_MAX, T_EDGE = 0.5, 1.0, 0.15   # °C : rose jusqu'à +0,5 ; violet de +0,5 à +1 ; transitions de +-0,15 °C
+T_PINK_MAX, T_VIOLET_MAX, T_EDGE = 0.2, 0.5, 0.1   # °C : rose jusqu'à +0,2 ; violet de +0,2 à +0.5 ; transitions de +-0,1 °C
 
 
 def lozere_anchors(vmin, vmax, n=16):
@@ -274,7 +274,7 @@ def lozere_anchors(vmin, vmax, n=16):
     - Violet : de vmin + 0,2 à vmin + 0,5 °C.
     - Bleu foncé : de vmin + 0,5 à vmin + 1,0 °C.
     - Au-delà de vmin + 1,0 °C : dégradé bleu, cyan, vert,
-      jaune, orange, rouge et rouge sombre.
+      jaune, orange, rouge et rouge vif.
 
     Renvoie une liste de points (température, couleur hexadécimale).
     """
