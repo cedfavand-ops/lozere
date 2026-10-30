@@ -824,14 +824,14 @@
    "lat": 44.70113,
    "lon": 3.15201,
    "z_station": 1160,
-   "tn": -6.17,
+   "tn": -6.95,
    "tx": 12.02,
    "tn_icon": 3.08,
    "tx_icon": 12.06,
    "alpha": 0.82,
    "motif": -1.95,
    "dz": 4.73,
-   "station_term": -5.15,
+   "station_term": -6.05,
    "motif_term": -4.74
   },
   {
@@ -841,14 +841,14 @@
    "lat": 44.81033,
    "lon": 3.56122,
    "z_station": 1161,
-   "tn": -7.37,
+   "tn": -7.44,
    "tx": 11.1,
    "tn_icon": -0.84,
    "tx_icon": 11.09,
    "alpha": 0.82,
    "motif": -2.81,
    "dz": -5.48,
-   "station_term": -0.42,
+   "station_term": -0.49,
    "motif_term": -6.36
   },
   {
