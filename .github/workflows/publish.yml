@@ -54,11 +54,15 @@ jobs:
         run: python update_state.py
 
       - name: Construire le site (run 12Z, repli 9Z)
-        run: python build_site.py --out site --wait-minutes 0
+        run: python build_site.py --out site --wait-minutes 30
 
       - name: Page de démonstration (indice d'inversion forcé à 1)
         continue-on-error: true
         run: python build_site.py --out site/demo --force-alpha 1 --npz "$(ls archive_icon_ch1/*_T_2M.npz | tail -1)"
+
+      - name: Page de test de la palette à 18 couleurs (vraies prévisions)
+        continue-on-error: true
+        run: python build_site.py --out site/test-palette --cmap turbo18 --no-history --npz "$(ls archive_icon_ch1/*_T_2M.npz | tail -1)"
 
       - name: Archiver la prévision aux stations (historique)
         continue-on-error: true
