@@ -262,42 +262,55 @@ def get_cmap(name):
     return LinearSegmentedColormap.from_list("lozere", cold + warm, N=512)
 
 
-COLD_PINK, COLD_VIOLET = "#ffc2e9", "#8e3fd6"
-COLD_DARKBLUE, COLD_BLUE = "#22249a", "#2f7bff"
-# Décalages (°C) PAR RAPPORT AU MINIMUM de la carte : rose pâle jusqu'à +0,3 ; violet dès +0,3 ; bleu foncé à +1,0 ; bleu à +1,5
-OFF_VIOLET, OFF_VIOLET_END, OFF_DARKBLUE, OFF_BLUE = 0.30, 0.85, 1.00, 1.50
-WARM = [("#19d3f0", 0.25), ("#3ee06a", 0.55), ("#b6ec2f", 0.80)]      # cyan, vert, vert-jaune (parts de la zone avant le jaune)
-YELLOW, ORANGE, ORANGE_RED, RED = "#ffe600", "#ff9d00", "#ff5a00", "#ff1a1a"
+# ---------------------------------------------------------------------------------------------------------------
+# Palettes : bloc FROID (4 couleurs : rose pâle, violet, bleu foncé, bleu) calé sur le MINIMUM de la carte, puis bloc CHAUD
+# en températures ABSOLUES (couleur, °C), pour qu'aucune couleur chaude ne s'affiche sur des valeurs froides.
+OFF_VIOLET, OFF_VIOLET_END, OFF_DARKBLUE, OFF_BLUE = 0.30, 0.85, 1.00, 1.50   # décalages (°C) au-dessus du minimum
+T_COLD_LIMIT = 1.0     # °C : au-delà, le bloc froid n'est plus calé sur le minimum (il resterait trop chaud pour être « froid »)
+
+_U = ["#FA8FF8", "#9C0799", "#250570", "#0B8BF4", "#27F5EB", "#27F591", "#27F53C", "#73F527", "#BBF527", "#FAF602",
+      "#FAE902", "#FAC002", "#FA8A02", "#FA5D02", "#C80909", "#FA0259", "#FA029B", "#FA02E9"]
+PALETTES = {
+    # palette par défaut : rouge vif au bout
+    "lozere": {
+        "cold": ["#ffc2e9", "#8e3fd6", "#22249a", "#2f7bff"],
+        "warm": [("#19d3f0", 3.0), ("#3ee06a", 7.0), ("#b6ec2f", 10.0), ("#ffe600", 13.0),
+                 ("#ff9d00", 18.0), ("#ff5a00", 22.0), ("#ff1a1a", 26.0)],
+    },
+    # palette à 18 couleurs proposée par l'utilisateur (cyan à +3 °C ... fuchsia à +36 °C)
+    "turbo18": {
+        "cold": _U[:4],
+        "warm": list(zip(_U[4:], [3.0, 5.0, 7.0, 9.0, 11.0, 13.0, 14.5, 16.5, 19.0, 22.0, 26.0, 30.0, 33.0, 36.0])),
+    },
+}
 
 
-def lozere_anchors(vmin, vmax):
+def lozere_anchors(vmin, vmax, pal="lozere"):
     """
-    Palette « lozere », calée sur le MINIMUM et le MAXIMUM de la carte :
-      - le point le plus froid de la carte est rose pâle ; dès +0,3 °C au-dessus du minimum : violet ;
-        dès +1,0 °C : bleu foncé ; dès +1,5 °C : bleu ;
-      - puis cyan, vert, jaune vif au milieu de la plage, orange, et rouge vif (pas de marron) au maximum.
-    Si la plage est étroite (moins de 6 °C), les décalages du froid sont réduits proportionnellement.
-    Renvoie une liste (température, couleur hexadécimale), températures croissantes.
+    Ancres (température, couleur) d'une palette de PALETTES, températures croissantes :
+      - FROID calé sur le minimum de la carte : le point le plus froid est de la 1re couleur (rose pâle) ; dès +0,3 °C
+        au-dessus : 2e couleur (violet) ; dès +1,0 °C : 3e (bleu foncé) ; dès +1,5 °C : 4e (bleu) ;
+      - CHAUD en températures absolues, sans jamais de jaune ni d'orange sur des valeurs négatives ou proches de 0 °C.
+    Si le minimum de la carte dépasse +1 °C (carte sans gel), le bloc froid reste calé sur +1 °C : la carte démarre alors
+    directement dans les bleus/cyan selon sa température réelle. Plage étroite (< 6 °C) : décalages du froid réduits.
     """
-    R = max(float(vmax) - float(vmin), 0.5)
+    cold, warm = PALETTES[pal]["cold"], PALETTES[pal]["warm"]
+    base = min(float(vmin), T_COLD_LIMIT)
+    R = max(float(vmax) - base, 0.5)
     k = min(1.0, R / 6.0)
-    t_b = vmin + OFF_BLUE * k
-    t_mid = vmin + R / 2.0
-    fy = float(np.clip((t_mid - t_b) / max(vmax - t_b, 1e-6), 0.35, 0.65))
-    warm_span = max(vmax - t_b, 0.2)
-    pts = [(vmin, COLD_PINK), (vmin + OFF_VIOLET * k, COLD_PINK), (vmin + (OFF_VIOLET + 0.15) * k, COLD_VIOLET),
-           (vmin + OFF_VIOLET_END * k, COLD_VIOLET), (vmin + OFF_DARKBLUE * k, COLD_DARKBLUE), (t_b, COLD_BLUE)]
-    pts += [(t_b + warm_span * f * fy, c) for c, f in WARM]
-    pts += [(t_b + warm_span * fy, YELLOW),
-            (t_b + warm_span * (fy + 0.40 * (1 - fy)), ORANGE),
-            (t_b + warm_span * (fy + 0.75 * (1 - fy)), ORANGE_RED),
-            (t_b + warm_span, RED)]
-    return [(-100.0, COLD_PINK)] + pts + [(max(vmax, t_b + warm_span) + 100.0, RED)]
+    pts = [(base, cold[0]), (base + OFF_VIOLET * k, cold[0]), (base + (OFF_VIOLET + 0.15) * k, cold[1]),
+           (base + OFF_VIOLET_END * k, cold[1]), (base + OFF_DARKBLUE * k, cold[2]), (base + OFF_BLUE * k, cold[3])]
+    last = pts[-1][0]
+    for color, t_abs in warm:
+        t = max(t_abs, last + 0.5)
+        pts.append((t, color))
+        last = t
+    return [(-100.0, cold[0])] + pts + [(last + 100.0, warm[-1][0])]
 
 
-def lozere_rgb(values, vmin, vmax):
+def lozere_rgb(values, vmin, vmax, pal="lozere"):
     from matplotlib.colors import to_rgb
-    pts = lozere_anchors(vmin, vmax)
+    pts = lozere_anchors(vmin, vmax, pal)
     T = np.array([p[0] for p in pts])
     cols = np.array([to_rgb(p[1]) for p in pts])
     v = np.asarray(values, dtype=float)
@@ -307,24 +320,24 @@ def lozere_rgb(values, vmin, vmax):
 def palette_stops(vmin, vmax, cmap_name="lozere"):
     """Couleurs de la légende : liste [position entre 0 et 1, couleur], positions croissantes."""
     from matplotlib.colors import to_hex
-    if cmap_name != "lozere":
+    if cmap_name not in PALETTES:
         pal = palette_hex(cmap_name)
         return [[i / (len(pal) - 1), c] for i, c in enumerate(pal)]
-    pts = lozere_anchors(vmin, vmax)
+    pts = lozere_anchors(vmin, vmax, cmap_name)
     span = float(vmax - vmin)
-    stops = [[0.0, to_hex(lozere_rgb(vmin, vmin, vmax))]]
+    stops = [[0.0, to_hex(lozere_rgb(vmin, vmin, vmax, cmap_name))]]
     for t, c in pts:
         pos = (t - vmin) / span
         if 1e-6 < pos < 1 - 1e-6:
             stops.append([round(pos, 5), c])
-    stops.append([1.0, to_hex(lozere_rgb(vmax, vmin, vmax))])
+    stops.append([1.0, to_hex(lozere_rgb(vmax, vmin, vmax, cmap_name))])
     return stops
 
 
 def colorize(arr, vmin, vmax, cmap_name="lozere"):
     from PIL import Image
-    if cmap_name == "lozere":
-        rgb = lozere_rgb(np.nan_to_num(arr, nan=vmin), vmin, vmax)
+    if cmap_name in PALETTES:
+        rgb = lozere_rgb(np.nan_to_num(arr, nan=vmin), vmin, vmax, cmap_name)
         rgba = np.concatenate([(rgb * 255).round().astype("uint8"), np.zeros(rgb.shape[:-1] + (1,), "uint8")], axis=-1)
         rgba[..., 3] = np.where(np.isnan(arr), 0, 255)
         return Image.fromarray(rgba, "RGBA")
@@ -335,7 +348,10 @@ def colorize(arr, vmin, vmax, cmap_name="lozere"):
 
 
 def palette_hex(cmap_name, n=17):
+    """Échantillon de couleurs (repli de la légende) : palette nommée de PALETTES, sinon palette matplotlib."""
     from matplotlib import colors
+    if cmap_name in PALETTES:
+        return [colors.to_hex(lozere_rgb(t, -5.0, 15.0, cmap_name)) for t in np.linspace(-5.0, 15.0, n)]
     cm = get_cmap(cmap_name)
     return [colors.to_hex(cm(i / (n - 1))) for i in range(n)]
 
@@ -472,12 +488,13 @@ def build_site(lat, lon, tn_pts, tx_pts, run_utc, win_info, geojson, out_dir, cm
         "run_utc": run_utc.isoformat(),
         "grid_m": GRID_M,
         "palette": palette_hex(cmap),
+        "cmap": cmap,
         **win_info,
         **model_info,
     }
     for name, arr, arr_full in (("tn", tn, tn_full), ("tx", tx, tx_full)):
         merc, bounds = to_mercator(arr, transform)
-        if cmap == "lozere":     # palette calée sur le minimum et le maximum réels de la carte (arrondis au dixième)
+        if cmap in PALETTES:     # palette calée sur le minimum et le maximum réels de la carte (arrondis au dixième)
             vmin, vmax = round(float(np.nanmin(merc)), 1), round(float(np.nanmax(merc)), 1)
             vmax = max(vmax, vmin + 1.0)
         else:
