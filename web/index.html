@@ -371,13 +371,15 @@ async function init() {
   });
 
   const missing = (meta.missing_inputs || []).join(', ');
+  const testPal = meta.cmap && meta.cmap !== 'lozere'
+    ? `<b style="color:var(--warn)">PALETTE DE TEST : ${meta.cmap}</b><br>` : '';
   const demo = meta.alpha_forced != null;
   if (demo) document.title = 'DÉMO – ' + document.title;
   const demoTxt = demo
     ? `<b style="color:var(--warn)">DÉMONSTRATION : indice d'inversion forcé à ${meta.alpha_forced.toFixed(2)}. ` +
       `Ce n'est pas la prévision réelle ; elle montre l'effet du motif d'inversion.</b><br>`
     : `<a href="demo/" style="color:var(--accent)">Voir la démonstration (inversion forcée à 1)</a><br>`;
-  const modelTxt = demoTxt + (meta.model === 'icon+motif'
+  const modelTxt = testPal + demoTxt + (meta.model === 'icon+motif'
     ? `Indice d'inversion : <b>${meta.alpha_mean.toFixed(2)}</b> (0 = aucune, 1 = nuit calme et claire)` +
       (meta.wind_night_mean != null ? `<br>Vent nocturne moyen ${meta.wind_night_mean.toFixed(1)} m/s` : '') +
       (meta.cloud_night_mean != null ? `${meta.wind_night_mean != null ? ', ' : '<br>'}nébulosité ${Math.round(meta.cloud_night_mean * 100)} %` : '') +
