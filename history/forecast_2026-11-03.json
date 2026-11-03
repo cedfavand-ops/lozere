@@ -875,14 +875,14 @@
    "lat": 44.28222,
    "lon": 3.45117,
    "z_station": 914,
-   "tn": -2.61,
+   "tn": -3.58,
    "tx": 6.16,
    "tn_icon": 0.49,
    "tx_icon": 6.09,
    "alpha": 0.55,
    "motif": -2.26,
    "dz": -17.0,
-   "station_term": -1.82,
+   "station_term": -3.04,
    "motif_term": -1.73
   }
  ]
