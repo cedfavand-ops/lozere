@@ -156,14 +156,27 @@ def apply_model(tn, tx, X, Y, ctx):
     alpha_pts, w_m, c_m = model.alpha_mesh(wind, c, night, len(pts))
     alpha = griddata(pts, alpha_pts, (X, Y), method="linear")
     alpha = np.where(np.isfinite(alpha), alpha, np.nanmean(alpha_pts))
-    alpha_reg = model.regional_alpha(alpha_pts)                   # le quart le plus calme du domaine
-    alpha = np.maximum(alpha, alpha_reg)
-    print(f"Indice radiatif régional (quart le plus calme) : {alpha_reg:.2f} ; indice retenu en moyenne : "
-          f"{float(alpha[ctx['inside']].mean()):.2f}")
-    if w_m is not None:
-        print(f"Vent nocturne à 10 m : moyenne {np.mean(w_m):.1f} m/s (mailles de {np.min(w_m):.1f} à {np.max(w_m):.1f})")
-    if c_m is not None:
-        print(f"Nébulosité nocturne : moyenne {100 * np.mean(c_m):.0f} % (mailles de {100 * np.min(c_m):.0f} à {100 * np.max(c_m):.0f} %)")
+    # Statistiques DANS le département (pas sur toute l'emprise des mailles), pixel par pixel après interpolation
+    def grid_of(vals):
+        g = griddata(pts, vals, (X, Y), method="linear")
+        return np.where(np.isfinite(g), g, np.nanmean(vals))
+
+    def pct(a):
+        return [float(np.nanpercentile(a[ctx["inside"]], q)) for q in (10, 50, 90)]
+
+    w_g = grid_of(w_m) if w_m is not None else None
+    c_g = grid_of(c_m) if c_m is not None else None
+    if w_g is not None:
+        p10, p50, p90 = pct(w_g)
+        print(f"Vent nocturne à 10 m dans le département : moyenne {w_g[ctx['inside']].mean():.1f} m/s "
+              f"(10e-90e centiles : {p10:.1f} à {p90:.1f})")
+    if c_g is not None:
+        p10, p50, p90 = pct(c_g)
+        print(f"Nébulosité nocturne dans le département : moyenne {100 * c_g[ctx['inside']].mean():.0f} % "
+              f"(10e-90e centiles : {100 * p10:.0f} à {100 * p90:.0f} %)")
+    p10, p50, p90 = pct(alpha)
+    print(f"Indice radiatif pixel par pixel : moyenne {alpha[ctx['inside']].mean():.2f} "
+          f"(10e-90e centiles : {p10:.2f} à {p90:.2f}) ; vent régional (quart le plus calme), nébulosité locale")
     forced = ctx.get("force_alpha")
     if forced is not None:
         alpha = np.full_like(alpha, float(forced))
@@ -202,10 +215,12 @@ def apply_model(tn, tx, X, Y, ctx):
         "alpha_min": float(alpha[inside].min()),
         "alpha_max": float(alpha[inside].max()),
         "night_hours": int(night.sum()),
-        "wind_night_mean": None if w_m is None else float(np.mean(w_m)),
-        "cloud_night_mean": None if c_m is None else float(np.mean(c_m)),
+        "alpha_p10": pct(alpha)[0], "alpha_p90": pct(alpha)[2],
+        "wind_night_mean": None if w_g is None else float(w_g[inside].mean()),
+        "wind_night_p10": None if w_g is None else pct(w_g)[0], "wind_night_p90": None if w_g is None else pct(w_g)[2],
+        "cloud_night_mean": None if c_g is None else float(c_g[inside].mean()),
+        "cloud_night_p10": None if c_g is None else pct(c_g)[0], "cloud_night_p90": None if c_g is None else pct(c_g)[2],
         "z_icon_source": z_src,
-        "alpha_regional": float(alpha_reg),
         "stations_anchored": len(anchored),
         "gain_neg": state["gain_neg"],
         "bias": state["bias"],
@@ -354,6 +369,17 @@ def palette_hex(cmap_name, n=17):
         return [colors.to_hex(lozere_rgb(t, -5.0, 15.0, cmap_name)) for t in np.linspace(-5.0, 15.0, n)]
     cm = get_cmap(cmap_name)
     return [colors.to_hex(cm(i / (n - 1))) for i in range(n)]
+
+
+def veil_image(alpha):
+    """Voile gris-bleu d'autant plus opaque que l'indice radiatif est faible (ciel couvert, vent) ; transparent si l'indice vaut 1."""
+    from PIL import Image
+    nan = np.isnan(alpha)
+    a = np.clip(np.nan_to_num(alpha, nan=1.0), 0.0, 1.0)
+    rgba = np.zeros(a.shape + (4,), dtype="uint8")
+    rgba[..., 0], rgba[..., 1], rgba[..., 2] = 70, 75, 95
+    rgba[..., 3] = np.where(nan, 0, np.round(255 * 0.75 * (1.0 - a))).astype("uint8")
+    return Image.fromarray(rgba, "RGBA")
 
 
 def encode_int16(arr):
@@ -508,6 +534,10 @@ def build_site(lat, lon, tn_pts, tx_pts, run_utc, win_info, geojson, out_dir, cm
                       "stops": palette_stops(vmin, vmax, cmap)}
         meta["width"], meta["height"] = int(merc.shape[1]), int(merc.shape[0])
         meta["bounds_3857"] = [float(b) for b in bounds]
+    if ctx.get("layers") and "alpha" in ctx["layers"]:
+        a_m, _ = to_mercator(np.where(inside, ctx["layers"]["alpha"], np.nan).astype("float32"), transform)
+        veil_image(a_m).save(out / "alpha.png", optimize=True)
+        meta["veil"] = True
     w_, s_, e_, n_ = transform_bounds("EPSG:3857", "EPSG:4326", *meta["bounds_3857"])
     meta["bounds_latlng"] = [[s_, w_], [n_, e_]]
 

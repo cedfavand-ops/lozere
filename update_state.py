@@ -65,7 +65,7 @@ def estimate_correction(stations, tn_obs):
             continue          # cuvettes à froid instrumentées : elles ont leur propre amplitude (ancrage), hors gain général
         if o is None or any(st.get(k) is None for k in ("tn", "motif_term", "alpha", "motif")):
             continue
-        a, m = max(float(st["alpha"]), a_ref), float(st["motif"])
+        a, m = float(st["alpha"]), float(st["motif"])       # indice LOCAL : un ciel couvert à la station compte
         base = float(st["tn"]) - float(st["motif_term"]) - float(st.get("station_term") or 0.0)   # sans correction radiative
         r = o - base - a * model.GAIN_POS * max(m, 0.0)                    # ce que gain et biais doivent expliquer
         rows.append((a, a * min(m, 0.0), r))
@@ -91,15 +91,14 @@ def update_stations(state, stations, tn_obs, day):
     erreur = observé - prévu (négative : prévision trop chaude) ; A <- A + poids * erreur / indice, borné.
     Renvoie la liste (id, ancien A, nouveau A, erreur).
     """
-    a_ref = alpha_reference(stations)
-    if a_ref < MIN_MEAN_ALPHA:
-        return []
     out = []
     for st in stations:
         o = tn_obs.get(st["id"])
         if o is None or st.get("tn") is None:
             continue
-        a_i = max(float(st.get("alpha") or 0.0), a_ref)
+        a_i = float(st.get("alpha") or 0.0)
+        if a_i < MIN_MEAN_ALPHA:
+            continue                       # nuit couverte ou ventée à cette station : pas de leçon sur le refroidissement radiatif
         rec = state.setdefault("stations", {}).setdefault(st["id"], {"A": 0.0, "n": 0})
         eta = {0: 0.9, 1: 0.6}.get(rec["n"], 0.4)
         err = o - float(st["tn"])
@@ -218,8 +217,8 @@ def main():
                 if sid.startswith("DC-"):
                     print(f"  ancrage {sid:13s} : erreur de la prévision {err:+5.1f} °C ; amplitude {old_a:+.2f} -> {new_a:+.2f}")
             print(f"  ancrage : {len(anch)} stations mises à jour")
-        elif alpha_reference(rec["stations"]) < MIN_MEAN_ALPHA:
-            print("  ancrage inchangé : nuit peu radiative")
+        else:
+            print("  ancrage inchangé : indice radiatif trop faible aux stations (ciel couvert ou vent)")
         if "skip" in est:
             print(f"  correction globale inchangée : {est['skip']}")
             if not est.get("retry") or now > t1 + dt.timedelta(days=1):

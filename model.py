@@ -74,12 +74,13 @@ def night_leads(lead_hours, run_utc, lat, lon):
     return np.array(out)
 
 
-def alpha_mesh(wind, cloud, night, n_pts):
+def alpha_mesh(wind, cloud, night, n_pts, wind_regional=True):
     """
     wind  : (n_échéances, n_mailles) en m/s, ou None
     cloud : (n_échéances, n_mailles) en fraction ou en %, ou None
     night : (n_échéances,) booléens
-    Renvoie (alpha, vent_moyen, nébulosité_moyenne) par maille. Un facteur indisponible vaut 0,5 (neutre) ;
+    Renvoie (alpha, vent_moyen, nébulosité_moyenne) par maille d'ICON (donc PIXEL PAR PIXEL une fois interpolé).
+    Un facteur indisponible vaut 0,5 (neutre) ;
     si les deux manquent, alpha = 0 (on retombe sur la correction d'altitude classique).
     """
     if wind is None and cloud is None:
@@ -93,6 +94,11 @@ def alpha_mesh(wind, cloud, night, n_pts):
         c = c / 100.0
     f_w = 1.0 - smoothstep((w - WIND_FULL) / (WIND_ZERO - WIND_FULL)) if w is not None else np.full(n_pts, 0.5)
     f_c = 1.0 - smoothstep((c - CLOUD_FULL) / (CLOUD_ZERO - CLOUD_FULL)) if c is not None else np.full(n_pts, 0.5)
+    if wind_regional and w is not None:
+        # Le vent à 10 m d'ICON ne dit pas ce que vit une cuvette (air calme même quand le plateau voisin est ventilé) :
+        # on retient pour le vent le quart le plus calme du domaine. La NÉBULOSITÉ, elle, reste strictement locale :
+        # un ciel couvert toute la nuit supprime le refroidissement radiatif à cet endroit.
+        f_w = np.maximum(f_w, float(np.quantile(f_w, 0.75)))
     return f_w * f_c, w, c
 
 
