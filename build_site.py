@@ -153,19 +153,39 @@ def apply_model(tn, tx, X, Y, ctx):
         if arr is None:
             print(f"ATTENTION : {name} indisponible -> facteur neutre (0,5).")
     night = model.night_leads(ctx["lead_hours"], ctx["run_utc"], float(np.mean(ctx["lat"])), float(np.mean(ctx["lon"])))
-    alpha_pts, w_m, c_m = model.alpha_mesh(wind, c, night, len(pts))
-    alpha = griddata(pts, alpha_pts, (X, Y), method="linear")
-    alpha = np.where(np.isfinite(alpha), alpha, np.nanmean(alpha_pts))
-    # Statistiques DANS le département (pas sur toute l'emprise des mailles), pixel par pixel après interpolation
-    def grid_of(vals):
-        g = griddata(pts, vals, (X, Y), method="linear")
-        return np.where(np.isfinite(g), g, np.nanmean(vals))
+    idx = np.flatnonzero(night)
+    if len(idx) < 4:
+        raise ValueError(f"Seulement {len(idx)} heures de nuit : run trop court ?")
+    from scipy.interpolate import LinearNDInterpolator
+    xy = np.column_stack([X.ravel(), Y.ravel()])
+
+    def hourly_grid(arr):
+        """(n_échéances, n_mailles) -> (n_heures de nuit, ny, nx) par interpolation linéaire des mailles d'ICON."""
+        vals = arr[idx].T
+        g = LinearNDInterpolator(pts, vals)(xy)
+        miss = ~np.isfinite(g)
+        if miss.any():
+            g[miss] = np.broadcast_to(np.nanmean(vals, axis=0), g.shape)[miss]
+        return g.T.reshape((len(idx),) + X.shape)
+
+    w_h = hourly_grid(wind) if wind is not None else None
+    if c is not None:
+        c_arr = c / 100.0 if np.nanmax(c) > 1.5 else c
+        c_h = hourly_grid(c_arr)
+    else:
+        c_h = None
+    shelter = np.clip(-motif / model.SHELTER_MOTIF, 0.0, 1.0)         # 1 dans une cuvette froide, 0 sur terrain exposé
+    nh = len(idx)
+    alpha = model.alpha_dynamic(None if w_h is None else w_h.reshape(nh, -1),
+                                None if c_h is None else c_h.reshape(nh, -1), shelter.ravel()).reshape(X.shape)
+    w_g = None if w_h is None else w_h.mean(axis=0)               # moyennes de la nuit, pixel par pixel
+    c_g = None if c_h is None else c_h.mean(axis=0)
+    w_m = None if w_g is None else float(w_g.mean())
+    c_m = None if c_g is None else float(c_g.mean())
 
     def pct(a):
         return [float(np.nanpercentile(a[ctx["inside"]], q)) for q in (10, 50, 90)]
 
-    w_g = grid_of(w_m) if w_m is not None else None
-    c_g = grid_of(c_m) if c_m is not None else None
     if w_g is not None:
         p10, p50, p90 = pct(w_g)
         print(f"Vent nocturne à 10 m dans le département : moyenne {w_g[ctx['inside']].mean():.1f} m/s "
@@ -175,8 +195,11 @@ def apply_model(tn, tx, X, Y, ctx):
         print(f"Nébulosité nocturne dans le département : moyenne {100 * c_g[ctx['inside']].mean():.0f} % "
               f"(10e-90e centiles : {100 * p10:.0f} à {100 * p90:.0f} %)")
     p10, p50, p90 = pct(alpha)
-    print(f"Indice radiatif pixel par pixel : moyenne {alpha[ctx['inside']].mean():.2f} "
-          f"(10e-90e centiles : {p10:.2f} à {p90:.2f}) ; vent régional (quart le plus calme), nébulosité locale")
+    print(f"Indice radiatif heure par heure et pixel par pixel ({nh} heures de nuit) : moyenne {alpha[ctx['inside']].mean():.2f} "
+          f"(10e-90e centiles : {p10:.2f} à {p90:.2f})")
+    for name_, arr_ in (("vent (U_10M, V_10M)", w_h), ("nébulosité (CLCT)", c_h)):
+        if arr_ is None:
+            print(f"ATTENTION : {name_} indisponible -> facteur neutre (0,5).")
     forced = ctx.get("force_alpha")
     if forced is not None:
         alpha = np.full_like(alpha, float(forced))
@@ -291,6 +314,12 @@ PALETTES = {
         "cold": ["#ffc2e9", "#8e3fd6", "#22249a", "#2f7bff"],
         "warm": [("#19d3f0", 3.0), ("#3ee06a", 7.0), ("#b6ec2f", 10.0), ("#ffe600", 13.0),
                  ("#ff9d00", 18.0), ("#ff5a00", 22.0), ("#ff1a1a", 26.0)],
+    },
+    # Tn : mêmes 4 couleurs froides, puis des teintes bien distinctes sur la plage des nuits (peu de bleus)
+    "tn": {
+        "cold": ["#ffc2e9", "#8e3fd6", "#22249a", "#2f7bff"],
+        "warm": [("#00e5ff", -2.0), ("#00e0a0", 0.0), ("#3ee06a", 2.0), ("#b6ec2f", 4.0), ("#ffe600", 6.0),
+                 ("#ff9d00", 9.0), ("#ff5a00", 12.0), ("#ff1a1a", 15.0)],
     },
     # palette à 18 couleurs proposée par l'utilisateur (cyan à +3 °C ... fuchsia à +36 °C)
     "turbo18": {
@@ -520,18 +549,19 @@ def build_site(lat, lon, tn_pts, tx_pts, run_utc, win_info, geojson, out_dir, cm
     }
     for name, arr, arr_full in (("tn", tn, tn_full), ("tx", tx, tx_full)):
         merc, bounds = to_mercator(arr, transform)
-        if cmap in PALETTES:     # palette calée sur le minimum et le maximum réels de la carte (arrondis au dixième)
+        pal = "tn" if (cmap == "lozere" and name == "tn") else cmap       # Tn : palette de nuit ; Tx : palette de jour
+        if pal in PALETTES:     # palette calée sur le minimum et le maximum réels de la carte (arrondis au dixième)
             vmin, vmax = round(float(np.nanmin(merc)), 1), round(float(np.nanmax(merc)), 1)
             vmax = max(vmax, vmin + 1.0)
         else:
             vmin, vmax = color_scale(merc)
         merc_full, _ = to_mercator(arr_full, transform)
         # Image de couleurs sur toute l'emprise (le voile blanc de la page la découpe au contour exact du département)
-        colorize(upsample_fill(merc_full), vmin, vmax, cmap).convert("RGB").save(out / f"{name}.png", optimize=True)
+        colorize(upsample_fill(merc_full), vmin, vmax, pal).convert("RGB").save(out / f"{name}.png", optimize=True)
         (out / f"{name}.bin").write_bytes(encode_int16(merc_full))   # champ complet : isolignes et lecture au survol
         meta[name] = {"vmin": vmin, "vmax": vmax,
                       "min": float(np.nanmin(merc)), "max": float(np.nanmax(merc)),
-                      "stops": palette_stops(vmin, vmax, cmap)}
+                      "stops": palette_stops(vmin, vmax, pal), "cmap": pal}
         meta["width"], meta["height"] = int(merc.shape[1]), int(merc.shape[0])
         meta["bounds_3857"] = [float(b) for b in bounds]
     if ctx.get("layers") and "alpha" in ctx["layers"]:

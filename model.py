@@ -47,6 +47,15 @@ GAIN_BOUNDS = (1.0, 5.0)
 BIAS_BOUNDS = (-4.0, 2.0)
 STATE_NAME = "correction_state.json"
 
+# Indice radiatif dynamique : le minimum de la nuit dépend du refroidissement ACCUMULÉ avant que le ciel se couvre ou que le
+# vent se lève, pas de la moyenne de la nuit. Chaque heure, chaque pixel : r = f_vent * f_nuages (de 0 à 1) ;
+# réservoir de froid C : C <- C * exp(-(1 - r) / TAU_WARM) + r (il se vide sous les nuages, se remplit par ciel clair) ;
+# indice = (1 - exp(-Cmax / TAU_COOL)) / (1 - exp(-N / TAU_COOL)), Cmax étant le maximum atteint, N la durée de la nuit.
+TAU_COOL = 4.0                          # heures : saturation du refroidissement
+TAU_WARM = 3.0                          # heures : remontée des températures sous un ciel couvert ou du vent
+SHELTER_MOTIF = 2.5                     # °C de motif froid à partir duquel le pixel est considéré comme pleinement abrité
+WIND_FULL_SHELTER, WIND_ZERO_SHELTER = 5.0, 9.0   # seuils de vent (m/s) dans une cuvette abritée (3 et 6 ailleurs)
+
 # Ancrage sur les stations : chaque station apprend sa propre amplitude A (°C par unité d'indice radiatif) et la
 # transmet aux pixels voisins de relief semblable (même motif, même altitude).
 STATION_RADIUS = 1500.0                 # m, portée du noyau gaussien
@@ -100,6 +109,49 @@ def alpha_mesh(wind, cloud, night, n_pts, wind_regional=True):
         # un ciel couvert toute la nuit supprime le refroidissement radiatif à cet endroit.
         f_w = np.maximum(f_w, float(np.quantile(f_w, 0.75)))
     return f_w * f_c, w, c
+
+
+def radiative_hours(wind_h, cloud_h, shelter):
+    """
+    Conditions radiatives heure par heure et pixel par pixel, de 0 à 1.
+    wind_h, cloud_h : (n_heures, n_pixels) en m/s et en fraction ; None si indisponible (facteur neutre 0,5).
+    shelter : (n_pixels,) de 0 (terrain exposé) à 1 (cuvette abritée) : dans une cuvette l'air reste calme même quand
+    le vent à 10 m d'ICON est plus fort, donc les seuils de vent y sont relevés.
+    """
+    n_h, n_pix = (wind_h if wind_h is not None else cloud_h).shape
+    if wind_h is None:
+        f_w = np.full((n_h, n_pix), 0.5)
+    else:
+        wf = WIND_FULL + (WIND_FULL_SHELTER - WIND_FULL) * shelter
+        wz = WIND_ZERO + (WIND_ZERO_SHELTER - WIND_ZERO) * shelter
+        f_w = 1.0 - smoothstep((wind_h - wf) / (wz - wf))
+    if cloud_h is None:
+        f_c = np.full((n_h, n_pix), 0.5)
+    else:
+        f_c = 1.0 - smoothstep((cloud_h - CLOUD_FULL) / (CLOUD_ZERO - CLOUD_FULL))
+    return f_w * f_c
+
+
+def alpha_dynamic(wind_h, cloud_h, shelter, hours=1.0):
+    """
+    Indice radiatif de la nuit (0 à 1) par pixel, avec mémoire du refroidissement : une nuit claire de 18 h à 2 h puis
+    couverte donne un indice élevé (le minimum est atteint vers 2 h), alors que la moyenne de la nébulosité aurait
+    sous-estimé le froid. 1 = nuit entière calme et claire.
+    """
+    if wind_h is None and cloud_h is None:
+        ref = np.zeros_like(shelter, dtype=float)
+        return ref
+    r = radiative_hours(wind_h, cloud_h, shelter)
+    n_h = r.shape[0]
+    if n_h < 4:
+        raise ValueError(f"Seulement {n_h} heures de nuit : run trop court ?")
+    C = np.zeros(r.shape[1])
+    Cmax = np.zeros(r.shape[1])
+    for h in range(n_h):
+        C = C * np.exp(-(1.0 - r[h]) * hours / TAU_WARM) + r[h] * hours
+        Cmax = np.maximum(Cmax, C)
+    full = 1.0 - np.exp(-(n_h * hours) / TAU_COOL)
+    return np.clip((1.0 - np.exp(-Cmax / TAU_COOL)) / full, 0.0, 1.0)
 
 
 def hsurf_ok(z_icon, dem):
