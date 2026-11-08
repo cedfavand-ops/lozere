@@ -595,7 +595,7 @@ def fetch_run(refs, wait_minutes):
     """
     import archive_icon_ch1 as icon
     first, others = refs[0], refs[1:]
-    deadline = time.time() + wait_minutes * 60
+    deadline = time.time() + wait_minutes * 0
     chosen = None
     while True:
         if icon.find_item(first, "T_2M", icon.MAX_HORIZON_H):
