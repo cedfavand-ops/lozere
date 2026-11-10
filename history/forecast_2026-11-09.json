@@ -12,7 +12,7 @@
  "tx_truncated_at_utc": "2026-11-10T21:00:00+00:00",
  "fallback": false,
  "model": "icon+motif",
- "alpha_mean": 0.00018000864725096187,
+ "alpha_mean": 0.0001800086472509619,
  "wind_night_mean": 4.818278205991379,
  "cloud_night_mean": 0.9982479671727512,
  "gain_neg": 1.0,
