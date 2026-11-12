@@ -46,6 +46,10 @@ jobs:
         continue-on-error: true
         run: python archive_icon_ch1.py --probe
 
+      - name: Liste des communes de plus de 300 habitants (étiquettes de la carte)
+        continue-on-error: true
+        run: python prepare_places.py
+
       - name: Ajuster la correction radiative sur la nuit passée (stations)
         continue-on-error: true
         env:
