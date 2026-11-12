@@ -574,6 +574,8 @@ def build_site(lat, lon, tn_pts, tx_pts, run_utc, win_info, geojson, out_dir, cm
     (out / "meta.json").write_text(json.dumps(meta, ensure_ascii=False, indent=1), encoding="utf-8")
     shutil.copy(HERE / "web" / "index.html", out / "index.html")
     shutil.copy(geojson, out / "lozere.geojson")
+    if (HERE / "data" / "places.json").exists():
+        shutil.copy(HERE / "data" / "places.json", out / "places.json")      # étiquettes des communes
     (out / ".nojekyll").write_text("")
     print(f"Site écrit dans {out}/ ({meta['width']}x{meta['height']} px).")
 
@@ -595,7 +597,7 @@ def fetch_run(refs, wait_minutes):
     """
     import archive_icon_ch1 as icon
     first, others = refs[0], refs[1:]
-    deadline = time.time() + wait_minutes * 0
+    deadline = time.time() + wait_minutes * 60
     chosen = None
     while True:
         if icon.find_item(first, "T_2M", icon.MAX_HORIZON_H):
