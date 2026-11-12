@@ -27,6 +27,13 @@
   label { display: block; font-size: 12px; color: var(--muted); margin-top: 8px; }
   input[type=range] { width: 100%; }
   .leaflet-container { font-family: inherit; }
+  .place { pointer-events: none; }
+  .place i { position: absolute; left: 2px; top: 2px; width: 6px; height: 6px; border-radius: 50%;
+             background: #111; border: 1.5px solid #fff; box-sizing: content-box; margin: -1.5px 0 0 -1.5px; }
+  .place b { position: absolute; left: 12px; top: -2px; font: 600 12px/14px system-ui, sans-serif; color: #111; white-space: nowrap;
+             text-shadow: 0 0 3px #fff, 0 0 3px #fff, 0 0 2px #fff, 0 0 2px #fff, 0 0 1px #fff; }
+  .place.p1 b { font-size: 14px; font-weight: 700; }
+  .place.p2 b { font-size: 13px; }
   .chk { display: flex; align-items: center; gap: 6px; cursor: pointer; }
   .chk input { margin: 0; }
   .iso-label { font: 700 11px system-ui, sans-serif; color: #111; text-align: center; line-height: 14px;
@@ -46,6 +53,7 @@
   <label>Opacité des couleurs <input id="op" type="range" min="0.2" max="1" step="0.05" value="0.85"></label>
   <label class="chk"><input type="checkbox" id="c-fill" checked> Couleurs</label>
   <label class="chk"><input type="checkbox" id="c-lines" checked> Isolignes (fines : 1 °C, épaisses : 5 °C)</label>
+  <label class="chk"><input type="checkbox" id="c-places" checked> Villes et villages (plus de 300 hab.)</label>
   <label class="chk"><input type="checkbox" id="c-veil"> Voile : zones nuageuses ou ventées (indice faible)</label>
   <div id="busy" style="font-size:12px;color:var(--muted);margin-top:6px"></div>
   <div id="info">Chargement…</div>
@@ -59,6 +67,7 @@
 const MAX_AGE_H = 30;         // au-delà, la page signale que la prévision n'a pas été mise à jour
 const NODATA = -32768;
 let meta, overlay, veil = null, current = 'tn';
+let places = [], placeLayer = null;     // communes de plus de 300 habitants (places.json)
 const vec = { lines: null, labels: null };
 const cache = {};          // grilles brutes (Int16)
 const fieldCache = {};     // grilles en °C (Float32, NaN = vide)
@@ -317,6 +326,33 @@ async function setVar(name, map) {
   }
 }
 
+function escapeHtml(t) {
+  return String(t).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+function refreshPlaces(map) {
+  // Étiquettes des communes, de la plus peuplée à la moins peuplée ; une étiquette qui en chevaucherait une déjà
+  // posée est omise : on voit les plus grandes en vue d'ensemble, toutes (> 300 hab.) en zoomant.
+  if (placeLayer) { map.removeLayer(placeLayer); placeLayer = null; }
+  if (!places.length || !document.getElementById('c-places').checked) return;
+  const view = map.getBounds().pad(0.05);
+  const boxes = [], group = L.layerGroup();
+  for (const p of places) {
+    if (!view.contains([p.lat, p.lon]) || !inGeo(p.lat, p.lon)) continue;
+    const pt = map.latLngToContainerPoint([p.lat, p.lon]);
+    const size = p.pop >= 2000 ? 14 : p.pop >= 1000 ? 13 : 12;
+    const w = p.name.length * size * 0.58 + 16, hgt = size + 6;
+    const box = [pt.x - 6, pt.y - hgt / 2, pt.x - 6 + w, pt.y + hgt / 2];
+    if (boxes.some(b => box[0] < b[2] && box[2] > b[0] && box[1] < b[3] && box[3] > b[1])) continue;
+    boxes.push(box);
+    group.addLayer(L.marker([p.lat, p.lon], {
+      pane: 'places', interactive: false, keyboard: false,
+      icon: L.divIcon({ className: 'place p' + (p.pop >= 2000 ? 1 : p.pop >= 1000 ? 2 : 3),
+                        html: '<i></i><b>' + escapeHtml(p.name) + '</b>', iconSize: [10, 10], iconAnchor: [5, 5] }) }));
+  }
+  placeLayer = group.addTo(map);
+}
+
 async function init() {
   meta = await (await fetch('meta.json', {cache: 'no-store'})).json();
   const geo = await (await fetch('lozere.geojson')).json();
@@ -341,6 +377,7 @@ async function init() {
   map.createPane('veil').style.zIndex = 420;
   map.createPane('lines').style.zIndex = 430;
   map.createPane('labels').style.zIndex = 440;
+  map.createPane('places').style.zIndex = 445;
   map.createPane('mask').style.zIndex = 450;
   map.createPane('border').style.zIndex = 460;
   const world = [[-85, -180], [-85, 180], [85, 180], [85, -180]];
@@ -356,6 +393,13 @@ async function init() {
   document.getElementById('c-fill').onchange = () => applyToggles(map);
   document.getElementById('c-lines').onchange = () => applyToggles(map);
   document.getElementById('c-veil').onchange = () => applyToggles(map);
+  document.getElementById('c-places').onchange = () => refreshPlaces(map);
+  try {
+    const r = await fetch('places.json');
+    if (r.ok) places = await r.json();
+  } catch (e) { console.warn('places.json indisponible', e); }
+  refreshPlaces(map);
+  map.on('moveend', () => refreshPlaces(map));
 
   // Température au survol de la souris (et, sur écran tactile, au toucher)
   const tip = document.getElementById('tip');
