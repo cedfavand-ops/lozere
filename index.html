@@ -27,6 +27,13 @@
   label { display: block; font-size: 12px; color: var(--muted); margin-top: 8px; }
   input[type=range] { width: 100%; }
   .leaflet-container { font-family: inherit; }
+  .place { pointer-events: none; }
+  .place i { position: absolute; left: 2px; top: 2px; width: 6px; height: 6px; border-radius: 50%;
+             background: #111; border: 1.5px solid #fff; box-sizing: content-box; margin: -1.5px 0 0 -1.5px; }
+  .place b { position: absolute; left: 12px; top: -2px; font: 600 12px/14px system-ui, sans-serif; color: #111; white-space: nowrap;
+             text-shadow: 0 0 3px #fff, 0 0 3px #fff, 0 0 2px #fff, 0 0 2px #fff, 0 0 1px #fff; }
+  .place.p1 b { font-size: 14px; font-weight: 700; }
+  .place.p2 b { font-size: 13px; }
   .chk { display: flex; align-items: center; gap: 6px; cursor: pointer; }
   .chk input { margin: 0; }
   .iso-label { font: 700 11px system-ui, sans-serif; color: #111; text-align: center; line-height: 14px;
@@ -46,6 +53,9 @@
   <label>Opacité des couleurs <input id="op" type="range" min="0.2" max="1" step="0.05" value="0.85"></label>
   <label class="chk"><input type="checkbox" id="c-fill" checked> Couleurs</label>
   <label class="chk"><input type="checkbox" id="c-lines" checked> Isolignes (fines : 1 °C, épaisses : 5 °C)</label>
+  <label class="chk"><input type="checkbox" id="c-places" checked> Villes et villages (plus de 300 hab.)</label>
+  <div id="places-status" style="font-size:11px;color:var(--muted);margin:-2px 0 2px 22px"></div>
+  <label class="chk"><input type="checkbox" id="c-veil"> Voile : zones nuageuses ou ventées (indice faible)</label>
   <div id="busy" style="font-size:12px;color:var(--muted);margin-top:6px"></div>
   <div id="info">Chargement…</div>
   <div id="stale"></div>
@@ -57,7 +67,8 @@
 <script>
 const MAX_AGE_H = 30;         // au-delà, la page signale que la prévision n'a pas été mise à jour
 const NODATA = -32768;
-let meta, overlay, current = 'tn';
+let meta, overlay, veil = null, current = 'tn';
+let places = [], placeLayer = null;     // communes de plus de 300 habitants (places.json)
 const vec = { lines: null, labels: null };
 const cache = {};          // grilles brutes (Int16)
 const fieldCache = {};     // grilles en °C (Float32, NaN = vide)
@@ -96,7 +107,8 @@ function drawLegend() {
   c.width = 256; c.height = 1;
   const ctx = c.getContext('2d');
   const g = ctx.createLinearGradient(0, 0, 256, 0);
-  meta.palette.forEach((col, i) => g.addColorStop(i / (meta.palette.length - 1), col));
+  const stops = meta[current].stops || meta.palette.map((c, i) => [i / (meta.palette.length - 1), c]);
+  stops.forEach(([pos, col]) => g.addColorStop(Math.min(Math.max(pos, 0), 1), col));
   ctx.fillStyle = g; ctx.fillRect(0, 0, 256, 1);
   document.getElementById('vmin').textContent = meta[current].vmin + ' °C';
   document.getElementById('vmax').textContent = meta[current].vmax + ' °C';
@@ -262,6 +274,7 @@ async function buildVectors(name) {
 }
 
 function clearLayers(map) {
+  if (veil) { map.removeLayer(veil); veil = null; }
   for (const k of ['lines', 'labels']) {
     if (vec[k]) { map.removeLayer(vec[k]); vec[k] = null; }
   }
@@ -269,6 +282,11 @@ function clearLayers(map) {
 }
 
 function applyToggles(map) {
+  if (veil) {
+    const veilOn = document.getElementById('c-veil').checked;
+    if (veilOn && !map.hasLayer(veil)) map.addLayer(veil);
+    if (!veilOn && map.hasLayer(veil)) map.removeLayer(veil);
+  }
   const linesOn = document.getElementById('c-lines').checked;
   for (const k of ['lines', 'labels']) {
     const l = vec[k];
@@ -288,6 +306,10 @@ async function setVar(name, map) {
   loadBin(name);                                   // charge la grille pour la lecture au survol
   overlay = L.imageOverlay(name + '.png?v=' + encodeURIComponent(meta.generated_at),
     L.latLngBounds(meta.bounds_latlng), { opacity: +document.getElementById('op').value, interactive: false }).addTo(map);
+  if (meta.veil) {
+    veil = L.imageOverlay('alpha.png?v=' + encodeURIComponent(meta.generated_at),
+      L.latLngBounds(meta.bounds_latlng), { pane: 'veil', interactive: false });
+  }
   applyToggles(map);
   if (typeof d3 === 'undefined' || !d3.contours) return;     // sans la bibliothèque : couleurs seules
   const busy = document.getElementById('busy');
@@ -303,6 +325,68 @@ async function setVar(name, map) {
   } finally {
     busy.textContent = '';
   }
+}
+
+const PLACES_API = 'https://geo.api.gouv.fr/communes?codeDepartement=48&fields=nom,code,population,centre&format=json&geometry=centre';
+const PLACES_MIN_POP = 300;
+
+async function loadPlaces() {
+  // 1) places.json publié avec la carte ; 2) copie gardée dans le navigateur ; 3) API publique geo.api.gouv.fr
+  const status = document.getElementById('places-status');
+  const ok = list => Array.isArray(list) && list.length >= 10;
+  try {
+    const r = await fetch('places.json');
+    if (r.ok) {
+      const list = await r.json();
+      if (ok(list)) { status.textContent = list.length + ' communes'; return list; }
+    }
+  } catch (e) { /* pas de places.json : on essaie la suite */ }
+  try {
+    const cached = JSON.parse(localStorage.getItem('lozere_places_v1') || 'null');
+    if (ok(cached)) { status.textContent = cached.length + ' communes (copie locale)'; return cached; }
+  } catch (e) { /* stockage indisponible */ }
+  try {
+    const r = await fetch(PLACES_API);
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const list = (await r.json())
+      .filter(c => c.population != null && c.population >= PLACES_MIN_POP && c.centre && c.centre.coordinates)
+      .map(c => ({ name: c.nom, lat: c.centre.coordinates[1], lon: c.centre.coordinates[0], pop: c.population }))
+      .sort((a, b) => b.pop - a.pop);
+    if (ok(list)) {
+      try { localStorage.setItem('lozere_places_v1', JSON.stringify(list)); } catch (e) { /* ignoré */ }
+      status.textContent = list.length + ' communes (geo.api.gouv.fr)';
+      return list;
+    }
+  } catch (e) { console.warn('communes indisponibles', e); }
+  status.textContent = 'liste des communes indisponible';
+  return [];
+}
+
+function escapeHtml(t) {
+  return String(t).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+function refreshPlaces(map) {
+  // Étiquettes des communes, de la plus peuplée à la moins peuplée ; une étiquette qui en chevaucherait une déjà
+  // posée est omise : on voit les plus grandes en vue d'ensemble, toutes (> 300 hab.) en zoomant.
+  if (placeLayer) { map.removeLayer(placeLayer); placeLayer = null; }
+  if (!places.length || !document.getElementById('c-places').checked) return;
+  const view = map.getBounds().pad(0.05);
+  const boxes = [], group = L.layerGroup();
+  for (const p of places) {
+    if (!view.contains([p.lat, p.lon]) || !inGeo(p.lat, p.lon)) continue;
+    const pt = map.latLngToContainerPoint([p.lat, p.lon]);
+    const size = p.pop >= 2000 ? 14 : p.pop >= 1000 ? 13 : 12;
+    const w = p.name.length * size * 0.58 + 16, hgt = size + 6;
+    const box = [pt.x - 6, pt.y - hgt / 2, pt.x - 6 + w, pt.y + hgt / 2];
+    if (boxes.some(b => box[0] < b[2] && box[2] > b[0] && box[1] < b[3] && box[3] > b[1])) continue;
+    boxes.push(box);
+    group.addLayer(L.marker([p.lat, p.lon], {
+      pane: 'places', interactive: false, keyboard: false,
+      icon: L.divIcon({ className: 'place p' + (p.pop >= 2000 ? 1 : p.pop >= 1000 ? 2 : 3),
+                        html: '<i></i><b>' + escapeHtml(p.name) + '</b>', iconSize: [10, 10], iconAnchor: [5, 5] }) }));
+  }
+  placeLayer = group.addTo(map);
 }
 
 async function init() {
@@ -326,8 +410,10 @@ async function init() {
   L.control.layers({ 'Plan IGN': ign, 'OpenStreetMap': osm }, null, { position: 'topright' }).addTo(map);
 
   // Voile blanc partout sauf à l'intérieur du département
+  map.createPane('veil').style.zIndex = 420;
   map.createPane('lines').style.zIndex = 430;
   map.createPane('labels').style.zIndex = 440;
+  map.createPane('places').style.zIndex = 445;
   map.createPane('mask').style.zIndex = 450;
   map.createPane('border').style.zIndex = 460;
   const world = [[-85, -180], [-85, 180], [85, 180], [85, -180]];
@@ -342,6 +428,11 @@ async function init() {
   document.getElementById('op').oninput = () => applyToggles(map);
   document.getElementById('c-fill').onchange = () => applyToggles(map);
   document.getElementById('c-lines').onchange = () => applyToggles(map);
+  document.getElementById('c-veil').onchange = () => applyToggles(map);
+  document.getElementById('c-places').onchange = () => refreshPlaces(map);
+  places = await loadPlaces();
+  refreshPlaces(map);
+  map.on('moveend', () => refreshPlaces(map));
 
   // Température au survol de la souris (et, sur écran tactile, au toucher)
   const tip = document.getElementById('tip');
@@ -370,16 +461,23 @@ async function init() {
   });
 
   const missing = (meta.missing_inputs || []).join(', ');
+  const testPal = meta.cmap && meta.cmap !== 'lozere'
+    ? `<b style="color:var(--warn)">PALETTE DE TEST : ${meta.cmap}</b><br>` : '';
   const demo = meta.alpha_forced != null;
   if (demo) document.title = 'DÉMO – ' + document.title;
   const demoTxt = demo
     ? `<b style="color:var(--warn)">DÉMONSTRATION : indice d'inversion forcé à ${meta.alpha_forced.toFixed(2)}. ` +
       `Ce n'est pas la prévision réelle ; elle montre l'effet du motif d'inversion.</b><br>`
     : `<a href="demo/" style="color:var(--accent)">Voir la démonstration (inversion forcée à 1)</a><br>`;
-  const modelTxt = demoTxt + (meta.model === 'icon+motif'
-    ? `Indice d'inversion : <b>${meta.alpha_mean.toFixed(2)}</b> (0 = aucune, 1 = nuit calme et claire)` +
-      (meta.wind_night_mean != null ? `<br>Vent nocturne moyen ${meta.wind_night_mean.toFixed(1)} m/s` : '') +
-      (meta.cloud_night_mean != null ? `${meta.wind_night_mean != null ? ', ' : '<br>'}nébulosité ${Math.round(meta.cloud_night_mean * 100)} %` : '') +
+  const modelTxt = testPal + demoTxt + (meta.model === 'icon+motif'
+    ? `Indice d'inversion, calculé pixel par pixel : moyenne <b>${meta.alpha_mean.toFixed(2)}</b>` +
+      (meta.alpha_p10 != null ? ` (de ${meta.alpha_p10.toFixed(2)} à ${meta.alpha_p90.toFixed(2)} selon les secteurs)` : '') +
+      ` ; 0 = aucune, 1 = nuit calme et claire` +
+      (meta.wind_night_mean != null ? `<br>Vent nocturne à 10 m : moyenne ${meta.wind_night_mean.toFixed(1)} m/s` +
+        (meta.wind_night_p10 != null ? ` (${meta.wind_night_p10.toFixed(1)} à ${meta.wind_night_p90.toFixed(1)})` : '') : '') +
+      (meta.cloud_night_mean != null ? `<br>Nébulosité nocturne : moyenne ${Math.round(meta.cloud_night_mean * 100)} %` +
+        (meta.cloud_night_p10 != null ? ` (${Math.round(meta.cloud_night_p10 * 100)} à ${Math.round(meta.cloud_night_p90 * 100)} %)` : '') : '') +
+      (meta.veil ? `<br>Cases « Voile » : montre où le ciel couvert ou le vent réduisent l'inversion.` : '') +
       (meta.gain_neg != null ? `<br>Amplification des cuvettes à froid : ×${meta.gain_neg.toFixed(1)} (ajustée sur les stations)` : '') +
       (missing ? `<br><b>Donnée ICON manquante : ${missing}</b>` : '') +
       `<br>Structure fine d'après une thermographie ECOSTRESS du 18/04/2026.`
