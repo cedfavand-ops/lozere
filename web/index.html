@@ -54,6 +54,7 @@
   <label class="chk"><input type="checkbox" id="c-fill" checked> Couleurs</label>
   <label class="chk"><input type="checkbox" id="c-lines" checked> Isolignes (fines : 1 °C, épaisses : 5 °C)</label>
   <label class="chk"><input type="checkbox" id="c-places" checked> Villes et villages (plus de 300 hab.)</label>
+  <div id="places-status" style="font-size:11px;color:var(--muted);margin:-2px 0 2px 22px"></div>
   <label class="chk"><input type="checkbox" id="c-veil"> Voile : zones nuageuses ou ventées (indice faible)</label>
   <div id="busy" style="font-size:12px;color:var(--muted);margin-top:6px"></div>
   <div id="info">Chargement…</div>
@@ -326,6 +327,41 @@ async function setVar(name, map) {
   }
 }
 
+const PLACES_API = 'https://geo.api.gouv.fr/communes?codeDepartement=48&fields=nom,code,population,centre&format=json&geometry=centre';
+const PLACES_MIN_POP = 300;
+
+async function loadPlaces() {
+  // 1) places.json publié avec la carte ; 2) copie gardée dans le navigateur ; 3) API publique geo.api.gouv.fr
+  const status = document.getElementById('places-status');
+  const ok = list => Array.isArray(list) && list.length >= 10;
+  try {
+    const r = await fetch('places.json');
+    if (r.ok) {
+      const list = await r.json();
+      if (ok(list)) { status.textContent = list.length + ' communes'; return list; }
+    }
+  } catch (e) { /* pas de places.json : on essaie la suite */ }
+  try {
+    const cached = JSON.parse(localStorage.getItem('lozere_places_v1') || 'null');
+    if (ok(cached)) { status.textContent = cached.length + ' communes (copie locale)'; return cached; }
+  } catch (e) { /* stockage indisponible */ }
+  try {
+    const r = await fetch(PLACES_API);
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const list = (await r.json())
+      .filter(c => c.population != null && c.population >= PLACES_MIN_POP && c.centre && c.centre.coordinates)
+      .map(c => ({ name: c.nom, lat: c.centre.coordinates[1], lon: c.centre.coordinates[0], pop: c.population }))
+      .sort((a, b) => b.pop - a.pop);
+    if (ok(list)) {
+      try { localStorage.setItem('lozere_places_v1', JSON.stringify(list)); } catch (e) { /* ignoré */ }
+      status.textContent = list.length + ' communes (geo.api.gouv.fr)';
+      return list;
+    }
+  } catch (e) { console.warn('communes indisponibles', e); }
+  status.textContent = 'liste des communes indisponible';
+  return [];
+}
+
 function escapeHtml(t) {
   return String(t).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
@@ -394,10 +430,7 @@ async function init() {
   document.getElementById('c-lines').onchange = () => applyToggles(map);
   document.getElementById('c-veil').onchange = () => applyToggles(map);
   document.getElementById('c-places').onchange = () => refreshPlaces(map);
-  try {
-    const r = await fetch('places.json');
-    if (r.ok) places = await r.json();
-  } catch (e) { console.warn('places.json indisponible', e); }
+  places = await loadPlaces();
   refreshPlaces(map);
   map.on('moveend', () => refreshPlaces(map));
 
