@@ -304,13 +304,23 @@ def get_cmap(name):
 # Palettes : bloc FROID (4 couleurs : rose pâle, violet, bleu foncé, bleu) calé sur le MINIMUM de la carte, puis bloc CHAUD
 # en températures ABSOLUES (couleur, °C), pour qu'aucune couleur chaude ne s'affiche sur des valeurs froides.
 OFF_VIOLET, OFF_VIOLET_END, OFF_DARKBLUE, OFF_BLUE = 0.30, 0.85, 1.00, 1.50   # décalages (°C) au-dessus du minimum
-T_COLD_LIMIT = 1.0     # °C : au-delà, le bloc froid n'est plus calé sur le minimum (il resterait trop chaud pour être « froid »)
+T_COLD_LIMIT = 6.0     # °C : au-delà, le bloc froid n'est plus calé sur le minimum (il resterait trop chaud pour être « froid »)
 
 _U = ["#FA8FF8", "#9C0799", "#250570", "#0B8BF4", "#27F5EB", "#27F591", "#27F53C", "#73F527", "#BBF527", "#FAF602",
       "#FAE902", "#FAC002", "#FA8A02", "#FA5D02", "#C80909", "#FA0259", "#FA029B", "#FA02E9"]
 PALETTES = {
-    # palette par défaut : rouge vif au bout
+    # palette par défaut, DYNAMIQUE : toutes les teintes sont réparties sur l'étendue réelle de la carte (contraste maximal).
+    # Froid calé sur le minimum (rose pâle, violet, bleu foncé, bleu) ; ensuite cyan, vert, vert-jaune, jaune vif (aux 7/10
+    # de l'étendue), orange, orange vif et rouge vif au maximum. Des planchers en °C évitent le jaune, l'orange et le rouge
+    # sur les valeurs négatives ou proches de 0 °C quand toute la carte est très froide.
     "lozere": {
+        "cold": ["#ffc2e9", "#8e3fd6", "#22249a", "#2f7bff"],
+        "warm_frac": [("#19d3f0", 0.18), ("#3ee06a", 0.38), ("#b6ec2f", 0.55), ("#ffe600", 0.70),
+                      ("#ff9d00", 0.84), ("#ff5a00", 0.93), ("#ff1a1a", 1.00)],
+        "floors": {"#ffe600": 2.0, "#ff9d00": 4.0, "#ff5a00": 5.5, "#ff1a1a": 7.0},
+    },
+    # ancienne palette de jour en températures absolues (jaune à +13 °C, rouge à +26 °C)
+    "lozere_abs": {
         "cold": ["#ffc2e9", "#8e3fd6", "#22249a", "#2f7bff"],
         "warm": [("#19d3f0", 3.0), ("#3ee06a", 7.0), ("#b6ec2f", 10.0), ("#ffe600", 13.0),
                  ("#ff9d00", 18.0), ("#ff5a00", 22.0), ("#ff1a1a", 26.0)],
@@ -338,13 +348,23 @@ def lozere_anchors(vmin, vmax, pal="lozere"):
     Si le minimum de la carte dépasse +1 °C (carte sans gel), le bloc froid reste calé sur +1 °C : la carte démarre alors
     directement dans les bleus/cyan selon sa température réelle. Plage étroite (< 6 °C) : décalages du froid réduits.
     """
-    cold, warm = PALETTES[pal]["cold"], PALETTES[pal]["warm"]
+    cold, warm = PALETTES[pal]["cold"], PALETTES[pal].get("warm", [])
     base = min(float(vmin), T_COLD_LIMIT)
     R = max(float(vmax) - base, 0.5)
     k = min(1.0, R / 6.0)
     pts = [(base, cold[0]), (base + OFF_VIOLET * k, cold[0]), (base + (OFF_VIOLET + 0.15) * k, cold[1]),
            (base + OFF_VIOLET_END * k, cold[1]), (base + OFF_DARKBLUE * k, cold[2]), (base + OFF_BLUE * k, cold[3])]
     last = pts[-1][0]
+    spec = PALETTES[pal]
+    if "warm_frac" in spec:                               # mode dynamique : réparti sur l'étendue de la carte
+        t_b = last
+        span = max(float(vmax) - t_b, 0.8)
+        floors = spec.get("floors", {})
+        for color, frac in spec["warm_frac"]:
+            t = max(t_b + span * frac, floors.get(color, -1e9), last + 0.4)
+            pts.append((t, color))
+            last = t
+        return [(-100.0, cold[0])] + pts + [(last + 100.0, spec["warm_frac"][-1][0])]
     for color, t_abs in warm:
         t = max(t_abs, last + 0.5)
         pts.append((t, color))
@@ -549,7 +569,7 @@ def build_site(lat, lon, tn_pts, tx_pts, run_utc, win_info, geojson, out_dir, cm
     }
     for name, arr, arr_full in (("tn", tn, tn_full), ("tx", tx, tx_full)):
         merc, bounds = to_mercator(arr, transform)
-        pal = "tn" if (cmap == "lozere" and name == "tn") else cmap       # Tn : palette de nuit ; Tx : palette de jour
+        pal = cmap                                                          # même palette dynamique pour Tn et Tx
         if pal in PALETTES:     # palette calée sur le minimum et le maximum réels de la carte (arrondis au dixième)
             vmin, vmax = round(float(np.nanmin(merc)), 1), round(float(np.nanmax(merc)), 1)
             vmax = max(vmax, vmin + 1.0)
